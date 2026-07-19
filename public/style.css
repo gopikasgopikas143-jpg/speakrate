@@ -98,6 +98,44 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   background: #16162a; padding: 12px; border-radius: 8px; margin: 10px 0;
 }
 .stars { display: flex; gap: 4px; margin-top: 6px; }
+/* ---------- Phase 2 additions ---------- */
+select {
+  width: 100%; padding: 12px 14px; margin-bottom: 12px;
+  border-radius: 8px; border: 1px solid #3a3a5a; background: #16162a;
+  color: #fff; font-size: 14px;
+}
+.checkbox-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+  font-size: 13px; color: #d0d0e0; cursor: pointer;
+}
+.tab-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.tab-btn {
+  width: auto; flex: none; background: #22223a; color: #d0d0e0;
+  padding: 8px 16px; font-size: 13px; margin-bottom: 0;
+}
+.tab-btn.active { background: #6c5ce7; color: #fff; }
+.badges-list { display: flex; flex-wrap: wrap; margin-bottom: 10px; }
+.badges-list .badge { font-size: 11px; padding: 3px 9px; }
+.topic-banner {
+  background: linear-gradient(135deg, #2d2d55, #22223a); border: 1px solid #3a3a5a;
+  border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; font-size: 14px;
+}
+.topic-banner strong { color: #a29bfe; }
+.team-panel { margin-bottom: 16px; }
+.team-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2a2a45; }
+.team-row:last-child { border-bottom: none; }
+.team-toggle { display: flex; gap: 6px; }
+.team-toggle button {
+  width: auto; padding: 6px 12px; font-size: 12px; margin-bottom: 0;
+  background: #22223a; color: #d0d0e0;
+}
+.team-toggle button.selected-a { background: #6c5ce7; color: #fff; }
+.team-toggle button.selected-b { background: #00cec9; color: #16162a; }
+.member-card.team-a { border-color: #6c5ce7; }
+.member-card.team-b { border-color: #00cec9; }
+.team-results { display: flex; gap: 12px; margin-bottom: 16px; }
+.team-results .score-card { flex: 1; text-align: center; margin-bottom: 0; }
+
 @media (max-width: 700px) {
   .app-shell { flex-direction: column; }
   .sidebar { width: 100%; flex-direction: row; overflow-x: auto; align-items: center; }

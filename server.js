@@ -19,6 +19,25 @@ const MAX_ROOM_SIZE = 8;
 const TURN_SECONDS = 60;
 const PEER_RATING_SECONDS = 30;
 
+// ---------- Filler word / WPM analytics (Phase 2) ----------
+const SINGLE_TOKEN_FILLERS = new Set(['um', 'uh', 'like', 'so', 'actually']);
+const PHRASE_FILLER_REGEX = /\byou know\b/g;
+
+function computeSpeechStats(text) {
+  const lower = (text || '').toLowerCase();
+  const words = lower.match(/[a-z']+/g) || [];
+  let fillerCount = 0;
+  for (const w of words) {
+    if (SINGLE_TOKEN_FILLERS.has(w)) fillerCount += 1;
+  }
+  const phraseMatches = lower.match(PHRASE_FILLER_REGEX);
+  if (phraseMatches) fillerCount += phraseMatches.length;
+
+  const minutes = TURN_SECONDS / 60;
+  const wpm = minutes > 0 ? +(words.length / minutes).toFixed(1) : 0;
+  return { fillerCount, wpm };
+}
+
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
@@ -64,7 +83,7 @@ app.post('/api/rooms', async (req, res) => {
   const user = await verifyUser(bearerToken(req));
   if (!user) return res.status(401).json({ error: 'Please sign in.' });
 
-  const { name, password } = req.body || {};
+  const { name, password, topic, teamMode } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Room name is required.' });
 
   const roomCode = generateRoomCode();
@@ -72,10 +91,11 @@ app.post('/api/rooms', async (req, res) => {
 
   const { error } = await supabaseAdmin.from('rooms').insert([{
     room_code: roomCode, name: name.trim(), password_hash: passwordHash, created_by: user.id,
+    topic: topic && topic.trim() ? topic.trim() : null, team_mode: !!teamMode,
   }]);
   if (error) return res.status(500).json({ error: error.message });
 
-  res.json({ roomCode, name: name.trim() });
+  res.json({ roomCode, name: name.trim(), topic: topic || null, teamMode: !!teamMode });
 });
 
 app.get('/api/rooms/active', async (req, res) => {
@@ -133,10 +153,124 @@ app.get('/api/rooms/mine', async (req, res) => {
   res.json(withStatus);
 });
 
+// ---------- Phase 2: Leaderboard ----------
+function weekAgoIso() {
+  return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+app.get('/api/leaderboard', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const period = req.query.period === 'week' ? 'week' : 'all';
+  let query = supabaseAdmin.from('session_results').select('user_id, final_score, created_at');
+  if (period === 'week') query = query.gte('created_at', weekAgoIso());
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const byUser = {};
+  for (const row of data || []) {
+    if (!row.user_id) continue;
+    if (!byUser[row.user_id]) byUser[row.user_id] = { total: 0, count: 0 };
+    byUser[row.user_id].total += row.final_score || 0;
+    byUser[row.user_id].count += 1;
+  }
+  const userIds = Object.keys(byUser);
+  if (userIds.length === 0) return res.json([]);
+
+  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, name').in('id', userIds);
+  const nameMap = Object.fromEntries((profiles || []).map(p => [p.id, p.name]));
+
+  const rows = userIds
+    .map(id => ({
+      userId: id,
+      name: nameMap[id] || 'Unknown',
+      avgFinalScore: +(byUser[id].total / byUser[id].count).toFixed(2),
+      sessionCount: byUser[id].count,
+    }))
+    .sort((a, b) => b.avgFinalScore - a.avgFinalScore)
+    .map((r, i) => ({ rank: i + 1, ...r }));
+
+  res.json(rows);
+});
+
+// Teams don't have a persistent identity across rooms (Team A in one room
+// isn't Team B in another) — so "team leaderboard" is ranked per
+// room-session, i.e. each row is one team's average final_score in one
+// completed team-mode session. See build summary for this call.
+app.get('/api/leaderboard/teams', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const period = req.query.period === 'week' ? 'week' : 'all';
+  let query = supabaseAdmin
+    .from('session_results')
+    .select('room_code, room_name, team, final_score, created_at')
+    .not('team', 'is', null);
+  if (period === 'week') query = query.gte('created_at', weekAgoIso());
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const byTeam = {};
+  for (const row of data || []) {
+    const key = `${row.room_code}::${row.team}`;
+    if (!byTeam[key]) {
+      byTeam[key] = { roomCode: row.room_code, roomName: row.room_name, team: row.team, total: 0, count: 0 };
+    }
+    byTeam[key].total += row.final_score || 0;
+    byTeam[key].count += 1;
+  }
+
+  const rows = Object.values(byTeam)
+    .map(t => ({
+      roomCode: t.roomCode, roomName: t.roomName, team: t.team,
+      avgScore: +(t.total / t.count).toFixed(2), memberCount: t.count,
+    }))
+    .sort((a, b) => b.avgScore - a.avgScore)
+    .map((r, i) => ({ rank: i + 1, ...r }));
+
+  res.json(rows);
+});
+
+// ---------- Phase 2: My History ----------
+app.get('/api/history/mine', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const { data, error } = await supabaseAdmin
+    .from('session_results')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json(data || []);
+});
+
+// ---------- Phase 2: Badges ----------
+app.get('/api/badges/mine', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const { data, error } = await supabaseAdmin
+    .from('badges')
+    .select('badge_type, awarded_at')
+    .eq('user_id', user.id)
+    .order('awarded_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json(data || []);
+});
+
 // ---------- In-memory live room state ----------
 // rooms: { [roomCode]: {
-//   dbId, name, passwordHash, members: {socketId: {name,userId,role}}, observers: Set<socketId>,
-//   order: [socketId], turnIndex, transcripts: {socketId:text}, pendingTranscriptions: Set,
+//   dbId, name, passwordHash, hostUserId, topic, teamMode,
+//   members: {socketId: {name,userId,role}}, observers: Set<socketId>,
+//   teams: {socketId: 'A'|'B'}, order: [socketId], turnIndex,
+//   transcripts: {socketId:text}, pendingTranscriptions: Set,
 //   peerRatings: {raterSocketId: {targetSocketId: score}}, state, timer, peerTimer
 // } }
 const rooms = {};
@@ -147,7 +281,9 @@ function roomSummary(roomCode) {
   return {
     roomCode,
     name: room.name,
-    members: Object.entries(room.members).map(([id, m]) => ({ id, name: m.name })),
+    topic: room.topic || null,
+    teamMode: room.teamMode,
+    members: Object.entries(room.members).map(([id, m]) => ({ id, name: m.name, team: room.teams[id] || null })),
     observerCount: room.observers.size,
     state: room.state,
     turnIndex: room.turnIndex,
@@ -291,6 +427,27 @@ ${transcriptBlock}`;
       result.bestSpeakerId = topScorer.id;
     }
 
+    // Filler word count + words-per-minute, straight from the transcript
+    // we already have in memory (Phase 2)
+    for (const s of result.scores) {
+      const stats = computeSpeechStats(room.transcripts[s.id]);
+      s.fillerWordCount = stats.fillerCount;
+      s.wordsPerMinute = stats.wpm;
+    }
+
+    // Team Mode results (Phase 2)
+    if (room.teamMode) {
+      const teamScores = { A: [], B: [] };
+      for (const s of result.scores) {
+        const team = room.teams[s.id];
+        if (team === 'A' || team === 'B') teamScores[team].push(s.finalScore);
+      }
+      const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null;
+      result.teamMode = true;
+      result.teamResults = { A: avg(teamScores.A), B: avg(teamScores.B) };
+      result.teamAssignments = { ...room.teams };
+    }
+
     room.state = 'done';
     io.to(roomCode).emit('rating-result', result);
     broadcastRoom(roomCode);
@@ -320,10 +477,90 @@ async function persistSessionResults(roomCode, room, result) {
     final_score: s.finalScore,
     feedback: s.feedback,
     is_best_speaker: s.id === result.bestSpeakerId,
+    team: room.teamMode ? (room.teams[s.id] || null) : null,
+    filler_word_count: s.fillerWordCount ?? null,
+    words_per_minute: s.wordsPerMinute ?? null,
   }));
   const { error } = await supabaseAdmin.from('session_results').insert(rows);
   if (error) throw error;
   console.log(`[${roomCode}] session results saved (${rows.length} rows)`);
+
+  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
+  checkAndAwardBadges(userIds).catch(err =>
+    console.error(`[${roomCode}] badge check failed:`, err.message)
+  );
+}
+
+// ---------- Phase 2: Gamification / badges ----------
+// Awarding is checked right after each session is persisted rather than on
+// a schedule/cron — there's no scheduler in this single-process app, and
+// "recompute after every session" is always at-least-as-fresh as any
+// periodic job would be, with far less moving parts. Both badge types use a
+// rolling 7-day window (not a calendar week) so they're consistent with the
+// Leaderboard's "This week" filter and don't reset awkwardly mid-week.
+async function checkAndAwardBadges(userIds) {
+  for (const userId of userIds) {
+    await checkStreakBadge(userId);
+  }
+  await checkTopSpeakerBadge();
+}
+
+async function checkStreakBadge(userId) {
+  const since = weekAgoIso();
+  const { data, error } = await supabaseAdmin
+    .from('session_results')
+    .select('created_at')
+    .eq('user_id', userId)
+    .gte('created_at', since);
+  if (error || !data) return;
+
+  const distinctDays = new Set(data.map(r => r.created_at.slice(0, 10)));
+  if (distinctDays.size < 5) return;
+
+  // Don't re-award while the same 7-day streak is still active
+  const { data: existing } = await supabaseAdmin
+    .from('badges')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('badge_type', '5-Day Streak')
+    .gte('awarded_at', since);
+  if (existing && existing.length > 0) return;
+
+  await supabaseAdmin.from('badges').insert([{ user_id: userId, badge_type: '5-Day Streak' }]);
+}
+
+async function checkTopSpeakerBadge() {
+  const since = weekAgoIso();
+  const { data, error } = await supabaseAdmin
+    .from('session_results')
+    .select('user_id, final_score')
+    .gte('created_at', since);
+  if (error || !data || data.length === 0) return;
+
+  const byUser = {};
+  for (const row of data) {
+    if (!row.user_id) continue;
+    if (!byUser[row.user_id]) byUser[row.user_id] = { total: 0, count: 0 };
+    byUser[row.user_id].total += row.final_score || 0;
+    byUser[row.user_id].count += 1;
+  }
+
+  let topUser = null, topAvg = -Infinity;
+  for (const [uid, v] of Object.entries(byUser)) {
+    const avg = v.total / v.count;
+    if (avg > topAvg) { topAvg = avg; topUser = uid; }
+  }
+  if (!topUser) return;
+
+  const { data: existing } = await supabaseAdmin
+    .from('badges')
+    .select('id')
+    .eq('user_id', topUser)
+    .eq('badge_type', 'Top Speaker of the Week')
+    .gte('awarded_at', since);
+  if (existing && existing.length > 0) return;
+
+  await supabaseAdmin.from('badges').insert([{ user_id: topUser, badge_type: 'Top Speaker of the Week' }]);
 }
 
 // ---------- Socket.io ----------
@@ -342,7 +579,8 @@ io.on('connection', (socket) => {
       if (!dbRoom) return socket.emit('join-error', 'Room not found. Ask the host to create it first.');
       room = rooms[roomCode] = {
         dbId: dbRoom.id, name: dbRoom.name, passwordHash: dbRoom.password_hash,
-        members: {}, observers: new Set(), order: [], turnIndex: -1,
+        hostUserId: dbRoom.created_by, topic: dbRoom.topic || null, teamMode: !!dbRoom.team_mode,
+        members: {}, observers: new Set(), teams: {}, order: [], turnIndex: -1,
         transcripts: {}, pendingTranscriptions: new Set(), peerRatings: {},
         state: 'waiting', timer: null, peerTimer: null,
       };
@@ -380,6 +618,34 @@ io.on('connection', (socket) => {
     socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
     socket.to(roomCode).emit('peer-joined', { id: socket.id, name: profile.name });
 
+    socket.emit('joined-info', { isHost: user.id === room.hostUserId });
+    broadcastRoom(roomCode);
+  });
+
+  // Host-only, while the room is still waiting to start (Team Mode)
+  socket.on('assign-team', ({ targetId, team }) => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.state !== 'waiting' || !room.teamMode) return;
+    const me = room.members[socket.id];
+    if (!me || me.userId !== room.hostUserId) return;
+    if (!room.members[targetId]) return;
+    if (team !== 'A' && team !== 'B' && team !== null) return;
+
+    if (team === null) delete room.teams[targetId];
+    else room.teams[targetId] = team;
+    broadcastRoom(roomCode);
+  });
+
+  socket.on('randomize-teams', () => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.state !== 'waiting' || !room.teamMode) return;
+    const me = room.members[socket.id];
+    if (!me || me.userId !== room.hostUserId) return;
+
+    const ids = Object.keys(room.members).sort(() => Math.random() - 0.5);
+    ids.forEach((id, i) => { room.teams[id] = i % 2 === 0 ? 'A' : 'B'; });
     broadcastRoom(roomCode);
   });
 

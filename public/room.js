@@ -11,6 +11,8 @@ let myName = '';
 let accessToken = null;
 let localStream = null;
 let isObserver = false;
+let isHost = false;
+let latestSummary = null;
 const peers = {};
 const audioEls = {};
 let mediaRecorder = null;
@@ -33,6 +35,12 @@ const resultsScreen = document.getElementById('results-screen');
 const roomTitle = document.getElementById('room-title');
 const roomStateBadge = document.getElementById('room-state');
 const observerBanner = document.getElementById('observer-banner');
+const topicBanner = document.getElementById('topic-banner');
+const topicText = document.getElementById('topic-text');
+const teamPanel = document.getElementById('team-panel');
+const teamAssignmentList = document.getElementById('team-assignment-list');
+const randomizeTeamsBtn = document.getElementById('randomize-teams-btn');
+const teamResultsEl = document.getElementById('team-results');
 const membersGrid = document.getElementById('members-grid');
 const turnBanner = document.getElementById('turn-banner');
 const turnText = document.getElementById('turn-text');
@@ -88,7 +96,13 @@ socket.on('join-error', (msg) => {
 });
 
 socket.on('observer-joined', (summary) => {
+  latestSummary = summary;
   renderMembers(summary);
+});
+
+socket.on('joined-info', ({ isHost: hostFlag }) => {
+  isHost = hostFlag;
+  if (latestSummary) renderTeamPanel(latestSummary);
 });
 
 socket.on('existing-peers', (peerList) => {
@@ -149,8 +163,16 @@ socket.on('signal', async ({ from, data }) => {
 
 // ---------- Room state ----------
 socket.on('room-update', (summary) => {
+  latestSummary = summary;
   roomStateBadge.textContent = summary.state;
   renderMembers(summary);
+  renderTeamPanel(summary);
+
+  if (summary.topic) {
+    topicText.textContent = summary.topic;
+    topicBanner.classList.remove('hidden');
+  }
+
   if (!isObserver) {
     startBtn.classList.toggle('hidden', summary.state !== 'waiting');
     startBtn.disabled = summary.members.length < 2;
@@ -163,13 +185,50 @@ socket.on('room-update', (summary) => {
 function renderMembers(summary) {
   membersGrid.innerHTML = '';
   summary.members.forEach(m => {
+    const teamClass = m.team === 'A' ? ' team-a' : m.team === 'B' ? ' team-b' : '';
     const div = document.createElement('div');
-    div.className = 'member-card' + (m.id === summary.currentSpeaker ? ' speaking' : '');
+    div.className = 'member-card' + (m.id === summary.currentSpeaker ? ' speaking' : '') + teamClass;
+    const teamTag = m.team ? ` · Team ${m.team}` : '';
     div.innerHTML = `<div class="avatar">${m.id === summary.currentSpeaker ? '🗣️' : '🙂'}</div>
-                      <div class="mname">${escapeHtml(m.name)}${m.id === myId ? ' (you)' : ''}</div>`;
+                      <div class="mname">${escapeHtml(m.name)}${m.id === myId ? ' (you)' : ''}${teamTag}</div>`;
     membersGrid.appendChild(div);
   });
 }
+
+// ---------- Team Mode (host only, while waiting) ----------
+function renderTeamPanel(summary) {
+  const shouldShow = isHost && summary.teamMode && summary.state === 'waiting' && !isObserver;
+  teamPanel.classList.toggle('hidden', !shouldShow);
+  if (!shouldShow) return;
+
+  teamAssignmentList.innerHTML = '';
+  summary.members.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'team-row';
+    row.innerHTML = `<span>${escapeHtml(m.name)}${m.id === myId ? ' (you)' : ''}</span>`;
+    const toggle = document.createElement('div');
+    toggle.className = 'team-toggle';
+
+    const btnA = document.createElement('button');
+    btnA.textContent = 'Team A';
+    btnA.type = 'button';
+    btnA.className = m.team === 'A' ? 'selected-a' : '';
+    btnA.onclick = () => socket.emit('assign-team', { targetId: m.id, team: m.team === 'A' ? null : 'A' });
+
+    const btnB = document.createElement('button');
+    btnB.textContent = 'Team B';
+    btnB.type = 'button';
+    btnB.className = m.team === 'B' ? 'selected-b' : '';
+    btnB.onclick = () => socket.emit('assign-team', { targetId: m.id, team: m.team === 'B' ? null : 'B' });
+
+    toggle.appendChild(btnA);
+    toggle.appendChild(btnB);
+    row.appendChild(toggle);
+    teamAssignmentList.appendChild(row);
+  });
+}
+
+randomizeTeamsBtn.onclick = () => socket.emit('randomize-teams');
 
 startBtn.onclick = () => socket.emit('start-session');
 skipBtn.onclick = () => socket.emit('skip-turn');
@@ -288,6 +347,20 @@ socket.on('rating-result', (result) => {
   bestSpeakerEl.innerHTML = `🏆 Best Speaker: <strong>${escapeHtml(best?.name || '?')}</strong><br>
     <span style="font-weight:400;font-size:14px;">${escapeHtml(result.bestSpeakerReason || '')}</span>`;
 
+  if (result.teamMode && result.teamResults) {
+    teamResultsEl.classList.remove('hidden');
+    const winner = result.teamResults.A != null && result.teamResults.B != null
+      ? (result.teamResults.A > result.teamResults.B ? 'A' : result.teamResults.B > result.teamResults.A ? 'B' : null)
+      : null;
+    teamResultsEl.innerHTML = ['A', 'B'].map(t => `
+      <div class="score-card">
+        <h3>Team ${t}${winner === t ? ' 🏆' : ''}</h3>
+        <div class="score-row"><span>Avg Final Score</span><span><strong>${result.teamResults[t] ?? '—'}/10</strong></span></div>
+      </div>`).join('');
+  } else {
+    teamResultsEl.classList.add('hidden');
+  }
+
   scoresListEl.innerHTML = '';
   result.scores
     .sort((a, b) => (b.finalScore ?? b.overall) - (a.finalScore ?? a.overall))
@@ -297,11 +370,14 @@ socket.on('rating-result', (result) => {
       const peerLine = s.peerAverage !== null && s.peerAverage !== undefined
         ? `<div class="score-row"><span>AI: ${s.overall}/10</span><span>Peer: ${s.peerAverage}/10</span><span><strong>Final: ${s.finalScore}/10</strong></span></div>`
         : `<div class="score-row"><span>AI: ${s.overall}/10 (no peer ratings received)</span></div>`;
+      const teamLine = s.id in (result.teamAssignments || {})
+        ? `<span class="badge" style="background:#636e72;">Team ${result.teamAssignments[s.id]}</span>` : '';
       div.innerHTML = `
-        <h3>${escapeHtml(s.name)} — ${s.finalScore ?? s.overall}/10</h3>
+        <h3>${escapeHtml(s.name)} — ${s.finalScore ?? s.overall}/10 ${teamLine}</h3>
         ${peerLine}
         <div class="score-row"><span>Clarity: ${s.clarity}</span><span>Fluency: ${s.fluency}</span>
              <span>Structure: ${s.structure}</span><span>Vocab: ${s.vocabulary}</span><span>Confidence: ${s.confidence}</span></div>
+        <div class="score-row"><span>Filler words: ${s.fillerWordCount ?? '—'}</span><span>${s.wordsPerMinute ?? '—'} wpm</span></div>
         <div class="feedback">${escapeHtml(s.feedback || '')}</div>`;
       scoresListEl.appendChild(div);
     });
