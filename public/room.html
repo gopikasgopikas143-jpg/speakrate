@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpeakRate — Room</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div id="room-screen" class="screen" style="flex-direction:column;align-items:stretch;max-width:700px;margin:0 auto;padding:20px;">
+  <header>
+    <h2 id="room-title">Room</h2>
+    <span id="room-state" class="badge">connecting</span>
+  </header>
+
+  <div id="observer-banner" class="turn-banner hidden" style="background:#636e72;">👁️ Observer mode — you're watching, not participating.</div>
+
+  <div id="members-grid" class="members-grid"></div>
+
+  <div id="turn-banner" class="turn-banner hidden">
+    <span id="turn-text"></span>
+    <span id="turn-timer">60</span>
+  </div>
+
+  <div id="controls">
+    <button id="mic-btn">🎤 Mute</button>
+    <button id="start-btn">Start Session</button>
+    <button id="skip-btn" class="hidden">Skip my turn</button>
+    <a href="dashboard.html" style="text-decoration:none;"><button type="button">Back to Dashboard</button></a>
+  </div>
+
+  <p id="status-line" class="hint"></p>
+</div>
+
+<div id="peer-rating-screen" class="screen hidden">
+  <div class="card wide">
+    <h1>⭐ Rate the Speakers</h1>
+    <p class="subtitle" id="peer-rating-timer">Rate everyone except yourself, 1-5 stars.</p>
+    <div id="peer-rating-list"></div>
+    <button id="submit-ratings-btn">Submit Ratings</button>
+    <p class="hint" id="peer-rating-progress"></p>
+  </div>
+</div>
+
+<div id="results-screen" class="screen hidden">
+  <div class="card wide">
+    <h1>🏆 Results</h1>
+    <div id="best-speaker" class="best-speaker"></div>
+    <div id="scores-list"></div>
+    <a href="dashboard.html" style="text-decoration:none;"><button>Back to Dashboard</button></a>
+  </div>
+</div>
+
+<script src="/config.js"></script>
+<script src="room.js"></script>
+</body>
+</html>
