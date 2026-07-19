@@ -292,11 +292,40 @@ async function loadHistory() {
     const peerBit = r.peer_average != null ? `Peer: ${r.peer_average}/10` : 'Peer: —';
     const teamBit = r.team ? `<span class="badge" style="background:#636e72;">Team ${escapeHtml(r.team)}</span>` : '';
     const bestBit = r.is_best_speaker ? `<span class="badge" style="background:#f6b93b;color:#2b1a00;">🏆 Best Speaker</span>` : '';
+    const typeLabels = { room: '👥 Room', solo: '🎤 Solo', conversation: '💬 Conversation' };
+    const typeBit = `<span class="badge session-type-badge ${r.session_type}">${typeLabels[r.session_type] || r.session_type}</span>`;
+    const topicBit = r.topic ? `<div class="hint" style="margin:4px 0 0;">Topic: ${escapeHtml(r.topic)}</div>` : '';
+
     div.innerHTML = `
-      <h3>${escapeHtml(r.room_name || r.room_code)} <span style="opacity:.6;font-weight:400;font-size:12px;">${date}</span></h3>
+      <h3>${escapeHtml(r.room_name || 'Practice Session')} <span style="opacity:.6;font-weight:400;font-size:12px;">${date}</span></h3>
+      <div style="margin-bottom:6px;">${typeBit}</div>
+      ${topicBit}
       <div class="score-row"><span>AI: ${r.ai_overall}/10</span><span>${peerBit}</span><span><strong>Final: ${r.final_score}/10</strong></span></div>
       <div class="score-row"><span>Filler words: ${r.filler_word_count ?? '—'}</span><span>${r.words_per_minute ?? '—'} wpm</span></div>
       <div style="margin-top:6px; display:flex; gap:6px;">${teamBit}${bestBit}</div>`;
+
+    if (r.audio_url) {
+      if (r.session_type === 'conversation') {
+        try {
+          const urls = JSON.parse(r.audio_url);
+          urls.forEach((u, i) => {
+            const label = document.createElement('div');
+            label.className = 'hint';
+            label.style.marginTop = '8px';
+            label.textContent = `Answer ${i + 1}:`;
+            const audioEl = document.createElement('audio');
+            audioEl.src = u; audioEl.controls = true;
+            div.appendChild(label);
+            div.appendChild(audioEl);
+          });
+        } catch (e) { /* malformed, skip playback */ }
+      } else {
+        const audioEl = document.createElement('audio');
+        audioEl.src = r.audio_url; audioEl.controls = true;
+        div.appendChild(audioEl);
+      }
+    }
+
     listEl.appendChild(div);
   });
 
@@ -371,7 +400,10 @@ async function loadMyBadges() {
   if (!resp.ok || !data.length) { el.innerHTML = ''; return; }
 
   const seen = new Set();
-  const icons = { '5-Day Streak': '🔥', 'Top Speaker of the Week': '🥇' };
+  const icons = {
+    '5-Day Streak': '🔥', 'Top Speaker of the Week': '🥇',
+    'Filler Words Cut in Half': '✂️', 'Fluency Climb': '📈',
+  };
   el.innerHTML = data
     .filter(b => !seen.has(b.badge_type) && seen.add(b.badge_type))
     .map(b => `<span class="badge" style="background:#2a2a45;margin:2px 4px 2px 0;">${icons[b.badge_type] || '🏅'} ${escapeHtml(b.badge_type)}</span>`)

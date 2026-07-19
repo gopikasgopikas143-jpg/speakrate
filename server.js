@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -38,10 +39,69 @@ function computeSpeechStats(text) {
   return { fillerCount, wpm };
 }
 
+// ---------- Phase 3: reusable Groq helpers (solo practice + AI conversation) ----------
+async function transcribeBuffer(buffer) {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: 'audio/webm' }), 'audio.webm');
+  form.append('model', 'whisper-large-v3-turbo');
+  const resp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+    body: form,
+  });
+  if (!resp.ok) throw new Error(`Whisper API ${resp.status}: ${await resp.text()}`);
+  const data = await resp.json();
+  return data.text || '';
+}
+
+async function callGroqJson(prompt) {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({ model: GROQ_MODEL, max_tokens: 1200, messages: [{ role: 'user', content: prompt }] }),
+  });
+  if (!response.ok) throw new Error(`Groq API ${response.status}: ${await response.text()}`);
+  const data = await response.json();
+  const raw = (data.choices?.[0]?.message?.content || '').trim()
+    .replace(/^```json/i, '').replace(/```$/, '').trim();
+  return JSON.parse(raw);
+}
+
+async function callGroqText(prompt) {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
+    body: JSON.stringify({ model: GROQ_MODEL, max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+  });
+  if (!response.ok) throw new Error(`Groq API ${response.status}: ${await response.text()}`);
+  const data = await response.json();
+  return (data.choices?.[0]?.message?.content || '').trim().replace(/^"|"$/g, '');
+}
+
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
+
+// Uploads a recorded audio buffer to the 'recordings' Supabase Storage
+// bucket and returns its public URL, or null if the upload fails (a failed
+// upload should never block transcription/rating — replay is a bonus, not
+// a required part of the flow).
+async function uploadRecording(buffer, pathHint) {
+  try {
+    const path = `${pathHint}-${Date.now()}.webm`;
+    const { error } = await supabaseAdmin.storage.from('recordings').upload(path, buffer, {
+      contentType: 'audio/webm',
+      upsert: false,
+    });
+    if (error) throw error;
+    const { data } = supabaseAdmin.storage.from('recordings').getPublicUrl(path);
+    return data?.publicUrl || null;
+  } catch (err) {
+    console.error('Recording upload failed:', err.message);
+    return null;
+  }
+}
 
 // expose public (safe) config to the browser
 app.get('/config.js', (req, res) => {
@@ -196,7 +256,7 @@ app.get('/api/leaderboard', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Please sign in.' });
 
   const period = req.query.period === 'week' ? 'week' : 'all';
-  let query = supabaseAdmin.from('session_results').select('user_id, final_score, created_at');
+  let query = supabaseAdmin.from('session_results').select('user_id, final_score, created_at').eq('session_type', 'room');
   if (period === 'week') query = query.gte('created_at', weekAgoIso());
 
   const { data, error } = await query;
@@ -296,6 +356,154 @@ app.get('/api/badges/mine', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
 
   res.json(data || []);
+});
+
+// ---------- Phase 3: Solo Practice ----------
+app.post('/api/solo/submit', express.raw({ type: 'audio/webm', limit: '10mb' }), async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+  const profile = await getProfile(user.id);
+
+  const topic = (req.query.topic || '').toString().slice(0, 200) || null;
+  const buffer = req.body;
+  if (!buffer || !buffer.length) return res.status(400).json({ error: 'No audio received.' });
+
+  try {
+    const text = await transcribeBuffer(buffer);
+    const uploadPromise = uploadRecording(buffer, `solo-${user.id}`);
+
+    const prompt = `You are an encouraging speaking coach for a student practicing English on their own — no audience, no comparison to other speakers, this is personal practice. Topic: "${topic || 'freely chosen by the student'}". Their ~60-second spoken transcript:
+"""${text || '(no speech captured)'}"""
+
+Rate them on Clarity, Fluency, Structure, Vocabulary, and Confidence (each /10), plus an Overall /10. Then give 2-3 sentences of warm, specific, encouraging feedback — this student may be a beginner building confidence, so be honest but supportive, and mention one thing they did well before suggesting an improvement.
+
+Respond ONLY with valid JSON, no markdown fences:
+{"clarity":0,"fluency":0,"structure":0,"vocabulary":0,"confidence":0,"overall":0,"feedback":"..."}`;
+
+    const aiResult = await callGroqJson(prompt);
+    const stats = computeSpeechStats(text);
+    const audioUrl = await uploadPromise;
+
+    const row = {
+      room_code: null, room_name: null, session_type: 'solo', topic,
+      user_id: user.id, speaker_name: profile?.name || user.email,
+      clarity: aiResult.clarity, fluency: aiResult.fluency, structure: aiResult.structure,
+      vocabulary: aiResult.vocabulary, confidence: aiResult.confidence, ai_overall: aiResult.overall,
+      peer_average: null, final_score: aiResult.overall, feedback: aiResult.feedback,
+      is_best_speaker: false, team: null,
+      filler_word_count: stats.fillerCount, words_per_minute: stats.wpm,
+      audio_url: audioUrl,
+    };
+    const { data: inserted, error } = await supabaseAdmin.from('session_results').insert([row]).select().single();
+    if (error) throw error;
+
+    checkAndAwardBadges([user.id]).catch(err => console.error('Solo badge check failed:', err.message));
+
+    res.json({ transcript: text, result: { ...aiResult, ...stats, audioUrl }, sessionId: inserted.id });
+  } catch (err) {
+    console.error('Solo practice error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- Phase 3: AI Conversation Partner ----------
+// In-memory only (like live room state) — a conversation is short-lived
+// and doesn't need to survive a server restart. Roughly 1 (opening
+// question) + N whisper calls + (N-1) follow-up-question calls + 1 final
+// rating call for an N-exchange conversation — e.g. 6 exchanges = 13 Groq
+// calls total for one full session. Comfortably inside free-tier limits
+// at class scale; keep an eye on this if usage grows a lot.
+const conversations = {};
+const CONVERSATION_MAX_EXCHANGES = 6;
+
+app.post('/api/conversation/start', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+  const topic = (req.body?.topic || '').toString().slice(0, 200) || 'anything you like';
+
+  try {
+    const question = await callGroqText(
+      `You are a friendly, encouraging English-conversation partner helping a beginner student practice speaking. Topic: "${topic}". Ask ONE simple, warm opening question to get them talking — one sentence, no preamble, no quotation marks.`
+    );
+    const conversationId = crypto.randomUUID();
+    conversations[conversationId] = {
+      userId: user.id, topic, exchanges: [], audioUrls: [], currentQuestion: question,
+    };
+    res.json({ conversationId, question });
+  } catch (err) {
+    console.error('Conversation start error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/conversation/:id/answer', express.raw({ type: 'audio/webm', limit: '10mb' }), async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const convo = conversations[req.params.id];
+  if (!convo || convo.userId !== user.id) return res.status(404).json({ error: 'Conversation not found or expired.' });
+
+  const buffer = req.body;
+  if (!buffer || !buffer.length) return res.status(400).json({ error: 'No audio received.' });
+
+  try {
+    const answerText = await transcribeBuffer(buffer);
+    uploadRecording(buffer, `conv-${req.params.id}-${convo.exchanges.length}`).then(url => {
+      if (url) convo.audioUrls.push(url);
+    });
+
+    convo.exchanges.push({ question: convo.currentQuestion, answer: answerText });
+
+    if (convo.exchanges.length >= CONVERSATION_MAX_EXCHANGES) {
+      const transcriptBlock = convo.exchanges
+        .map((e, i) => `Q${i + 1}: ${e.question}\nA${i + 1}: ${e.answer}`).join('\n\n');
+      const prompt = `You are an encouraging speaking coach reviewing a practice conversation with a beginner English student. Topic: "${convo.topic}". Here is the full exchange:
+
+${transcriptBlock}
+
+Rate their overall speaking across the whole conversation on Clarity, Fluency, Structure, Vocabulary, and Confidence (each /10), plus an Overall /10. Give 2-3 sentences of warm, specific, encouraging feedback highlighting their progress and one area to work on.
+
+Respond ONLY with valid JSON, no markdown fences:
+{"clarity":0,"fluency":0,"structure":0,"vocabulary":0,"confidence":0,"overall":0,"feedback":"..."}`;
+
+      const aiResult = await callGroqJson(prompt);
+      const allAnswersText = convo.exchanges.map(e => e.answer).join(' ');
+      const stats = computeSpeechStats(allAnswersText);
+      const profile = await getProfile(user.id);
+
+      const row = {
+        room_code: null, room_name: null, session_type: 'conversation', topic: convo.topic,
+        user_id: user.id, speaker_name: profile?.name || user.email,
+        clarity: aiResult.clarity, fluency: aiResult.fluency, structure: aiResult.structure,
+        vocabulary: aiResult.vocabulary, confidence: aiResult.confidence, ai_overall: aiResult.overall,
+        peer_average: null, final_score: aiResult.overall, feedback: aiResult.feedback,
+        is_best_speaker: false, team: null,
+        filler_word_count: stats.fillerCount, words_per_minute: stats.wpm,
+        audio_url: JSON.stringify(convo.audioUrls),
+      };
+      const { error } = await supabaseAdmin.from('session_results').insert([row]);
+      if (error) console.error('Failed to persist conversation session:', error.message);
+      else checkAndAwardBadges([user.id]).catch(e => console.error('Conversation badge check failed:', e.message));
+
+      const exchanges = convo.exchanges;
+      delete conversations[req.params.id];
+      return res.json({ done: true, exchanges, result: { ...aiResult, ...stats } });
+    }
+
+    const historyBlock = convo.exchanges.map(e => `Q: ${e.question}\nA: ${e.answer}`).join('\n\n');
+    const nextQuestion = await callGroqText(
+      `You are a friendly, encouraging English-conversation partner helping a beginner student practice speaking. Topic: "${convo.topic}". Conversation so far:
+
+${historyBlock}
+
+Ask ONE natural follow-up question that builds on what they just said — one sentence, no preamble, no quotation marks, keep it simple and encouraging.`
+    );
+    convo.currentQuestion = nextQuestion;
+    res.json({ done: false, question: nextQuestion, exchangeCount: convo.exchanges.length });
+  } catch (err) {
+    console.error('Conversation answer error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------- In-memory live room state ----------
@@ -501,6 +709,8 @@ async function persistSessionResults(roomCode, room, result) {
   const rows = result.scores.map(s => ({
     room_code: roomCode,
     room_name: room.name,
+    session_type: 'room',
+    topic: room.topic || null,
     user_id: room.members[s.id]?.userId || null,
     speaker_name: s.name,
     clarity: s.clarity, fluency: s.fluency, structure: s.structure,
@@ -513,6 +723,7 @@ async function persistSessionResults(roomCode, room, result) {
     team: room.teamMode ? (room.teams[s.id] || null) : null,
     filler_word_count: s.fillerWordCount ?? null,
     words_per_minute: s.wordsPerMinute ?? null,
+    audio_url: (room.audioUrls && room.audioUrls[s.id]) || null,
   }));
   const { error } = await supabaseAdmin.from('session_results').insert(rows);
   if (error) throw error;
@@ -534,6 +745,8 @@ async function persistSessionResults(roomCode, room, result) {
 async function checkAndAwardBadges(userIds) {
   for (const userId of userIds) {
     await checkStreakBadge(userId);
+    await checkFillerImprovementBadge(userId);
+    await checkFluencyClimbBadge(userId);
   }
   await checkTopSpeakerBadge();
 }
@@ -567,6 +780,7 @@ async function checkTopSpeakerBadge() {
   const { data, error } = await supabaseAdmin
     .from('session_results')
     .select('user_id, final_score')
+    .eq('session_type', 'room')
     .gte('created_at', since);
   if (error || !data || data.length === 0) return;
 
@@ -594,6 +808,63 @@ async function checkTopSpeakerBadge() {
   if (existing && existing.length > 0) return;
 
   await supabaseAdmin.from('badges').insert([{ user_id: topUser, badge_type: 'Top Speaker of the Week' }]);
+}
+
+// ---------- Phase 3: skill-improvement badges ----------
+// Both compare a user's LATEST session against the average of their
+// previous 5, so they need at least 6 sessions of any type (room, solo, or
+// conversation all count towards personal progress) to have a real
+// baseline. Each is tied to the specific session_id that earned it via
+// badges.session_id, so re-running this after the same session never
+// double-awards it — but a genuinely new improvement moment (a later
+// session that also clears the bar) earns it again, unlike the Phase 2
+// time-window badges which are capped per rolling week.
+async function checkFillerImprovementBadge(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('session_results')
+    .select('id, filler_word_count, created_at')
+    .eq('user_id', userId)
+    .not('filler_word_count', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(6);
+  if (error || !data || data.length < 6) return;
+
+  const [latest, ...previous] = data;
+  const prevAvg = previous.reduce((a, r) => a + r.filler_word_count, 0) / previous.length;
+  if (prevAvg <= 0 || latest.filler_word_count > prevAvg * 0.5) return;
+
+  const { data: existing } = await supabaseAdmin
+    .from('badges').select('id')
+    .eq('user_id', userId).eq('badge_type', 'Filler Words Cut in Half').eq('session_id', latest.id);
+  if (existing && existing.length > 0) return;
+
+  await supabaseAdmin.from('badges').insert([{
+    user_id: userId, badge_type: 'Filler Words Cut in Half', session_id: latest.id,
+  }]);
+}
+
+async function checkFluencyClimbBadge(userId) {
+  const { data, error } = await supabaseAdmin
+    .from('session_results')
+    .select('id, clarity, fluency, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(6);
+  if (error || !data || data.length < 6) return;
+
+  const [latest, ...previous] = data;
+  const combo = (r) => (r.clarity + r.fluency) / 2;
+  const prevAvg = previous.reduce((a, r) => a + combo(r), 0) / previous.length;
+  if (combo(latest) < prevAvg + 1.5) return;
+
+  const { data: existing } = await supabaseAdmin
+    .from('badges').select('id')
+    .eq('user_id', userId).eq('badge_type', 'Fluency Climb').eq('session_id', latest.id);
+  if (existing && existing.length > 0) return;
+
+  await supabaseAdmin.from('badges').insert([{
+    user_id: userId, badge_type: 'Fluency Climb', session_id: latest.id,
+  }]);
 }
 
 // ---------- Socket.io ----------
@@ -702,6 +973,10 @@ io.on('connection', (socket) => {
 
     room.pendingTranscriptions.add(socket.id);
     io.to(roomCode).emit('transcribing-status', { name: socket.data.name });
+
+    uploadRecording(Buffer.from(buffer), `room-${roomCode}-${socket.id}`).then(url => {
+      if (url) room.audioUrls = { ...(room.audioUrls || {}), [socket.id]: url };
+    });
 
     try {
       const form = new FormData();

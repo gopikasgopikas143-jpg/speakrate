@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpeakRate — Solo Practice</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="topics.js"></script>
+</head>
+<body>
+
+<div class="screen" style="flex-direction:column;align-items:stretch;max-width:600px;margin:0 auto;padding:20px;">
+  <header>
+    <h2>🎤 Solo Practice</h2>
+    <a href="dashboard.html" style="text-decoration:none;"><button type="button" style="width:auto;">Back</button></a>
+  </header>
+
+  <div id="setup-panel" class="panel">
+    <select id="topic-select">
+      <option value="">No topic (freestyle)</option>
+    </select>
+    <div style="display:flex; gap:8px;">
+      <input id="topic-input" type="text" placeholder="Speaking topic (optional)" style="margin-bottom:0;">
+      <button id="random-topic-btn" type="button" style="width:auto; white-space:nowrap; margin-bottom:0;">🎲 Random</button>
+    </div>
+    <p class="hint">You'll get 60 seconds to speak. Click Start when you're ready.</p>
+    <button id="start-recording-btn" style="margin-top:14px;">🔴 Start Recording (60s)</button>
+  </div>
+
+  <div id="recording-panel" class="panel hidden">
+    <div class="record-indicator"><span class="record-dot"></span> Recording...</div>
+    <div id="rec-timer" style="font-size:32px;font-weight:700;text-align:center;">60</div>
+    <button id="stop-recording-btn">Stop &amp; Submit</button>
+  </div>
+
+  <div id="processing-panel" class="panel hidden">
+    <p class="hint" id="processing-status">Uploading and transcribing your speech...</p>
+  </div>
+
+  <div id="result-panel" class="panel hidden">
+    <h3 id="result-score" style="margin-top:0;"></h3>
+    <div class="score-row">
+      <span id="result-clarity"></span><span id="result-fluency"></span><span id="result-structure"></span>
+      <span id="result-vocab"></span><span id="result-confidence"></span>
+    </div>
+    <div class="score-row" style="margin-top:8px;">
+      <span id="result-filler"></span><span id="result-wpm"></span>
+    </div>
+    <div class="feedback" id="result-feedback"></div>
+    <audio id="result-audio" class="hidden" controls></audio>
+    <button id="practice-again-btn" style="margin-top:14px;">🎤 Practice Again</button>
+  </div>
+</div>
+
+<script src="/config.js"></script>
+<script src="solo.js"></script>
+</body>
+</html>

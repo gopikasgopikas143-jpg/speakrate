@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpeakRate — AI Conversation</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="topics.js"></script>
+</head>
+<body>
+
+<div class="screen" style="flex-direction:column;align-items:stretch;max-width:600px;margin:0 auto;padding:20px;">
+  <header>
+    <h2>💬 AI Conversation</h2>
+    <a href="dashboard.html" style="text-decoration:none;"><button type="button" style="width:auto;">Back</button></a>
+  </header>
+
+  <div id="setup-panel" class="panel">
+    <select id="topic-select">
+      <option value="">Any topic</option>
+    </select>
+    <div style="display:flex; gap:8px;">
+      <input id="topic-input" type="text" placeholder="Or type a topic" style="margin-bottom:0;">
+      <button id="random-topic-btn" type="button" style="width:auto; white-space:nowrap; margin-bottom:0;">🎲 Random</button>
+    </div>
+    <p class="hint">The AI will ask you questions — answer each one out loud, 6 exchanges total.</p>
+    <button id="start-conversation-btn" style="margin-top:14px;">💬 Start Conversation</button>
+  </div>
+
+  <div id="conversation-panel" class="panel hidden">
+    <div class="chat-log" id="chat-log"></div>
+
+    <div id="answer-controls">
+      <button id="record-answer-btn">🎤 Record Your Answer</button>
+      <div id="recording-indicator" class="record-indicator hidden"><span class="record-dot"></span> Recording... <span id="conv-timer">60</span>s</div>
+      <button id="stop-answer-btn" class="hidden">Stop &amp; Send</button>
+    </div>
+    <p class="hint" id="conv-status"></p>
+  </div>
+
+  <div id="result-panel" class="panel hidden">
+    <h3 id="result-score" style="margin-top:0;"></h3>
+    <div class="score-row">
+      <span id="result-clarity"></span><span id="result-fluency"></span><span id="result-structure"></span>
+      <span id="result-vocab"></span><span id="result-confidence"></span>
+    </div>
+    <div class="score-row" style="margin-top:8px;">
+      <span id="result-filler"></span><span id="result-wpm"></span>
+    </div>
+    <div class="feedback" id="result-feedback"></div>
+    <button id="practice-again-btn" style="margin-top:14px;">💬 New Conversation</button>
+  </div>
+</div>
+
+<script src="/config.js"></script>
+<script src="conversation.js"></script>
+</body>
+</html>
