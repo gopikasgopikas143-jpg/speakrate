@@ -39,10 +39,18 @@
           <button id="enter-created-room-btn">Enter Room</button>
         </div>
       </div>
+
+      <h3 style="margin-top:28px;">Your Rooms</h3>
+      <div id="my-rooms-list" class="panel"><p class="hint">Loading...</p></div>
     </section>
 
     <section id="view-join-room" class="view hidden">
       <h2>🚪 Join a Room</h2>
+
+      <h3>Available Rooms</h3>
+      <div id="browse-rooms-list" class="panel"><p class="hint">Loading...</p></div>
+
+      <h3 style="margin-top:28px;">Or Enter a Room Code</h3>
       <div class="panel">
         <input id="join-code-input" type="text" placeholder="Room code" maxlength="10" style="text-transform:uppercase;">
         <input id="join-password-input" type="password" placeholder="Password (if the room has one)">
