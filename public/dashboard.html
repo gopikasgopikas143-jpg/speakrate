@@ -6,6 +6,8 @@
 <title>SpeakRate — Dashboard</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="topics.js"></script>
 </head>
 <body>
 
@@ -21,6 +23,7 @@
     </nav>
     <div class="sidebar-footer">
       <div id="user-info" class="user-info"></div>
+      <div id="badges-list" class="badges-list"></div>
       <button id="logout-btn">Log out</button>
     </div>
   </aside>
@@ -32,6 +35,20 @@
       <div class="panel">
         <input id="room-name-input" type="text" placeholder="Room name (e.g. Class 10 Practice)" maxlength="40">
         <input id="room-password-input" type="password" placeholder="Password (optional)">
+
+        <select id="topic-select">
+          <option value="">No topic (pick during the room, or skip)</option>
+        </select>
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <input id="topic-input" type="text" placeholder="Speaking topic (optional)" style="margin-bottom:0;">
+          <button id="random-topic-btn" type="button" style="width:auto; white-space:nowrap; margin-bottom:0;">🎲 Random</button>
+        </div>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="team-mode-checkbox" style="width:auto; margin:0;">
+          Enable Team Mode (host assigns Team A / Team B before starting)
+        </label>
+
         <button id="create-room-btn">Create Room</button>
         <div id="create-room-result" class="hidden result-box">
           <p>Room created! Share this code:</p>
@@ -61,12 +78,30 @@
 
     <section id="view-leaderboard" class="view hidden">
       <h2>🏆 Leaderboard</h2>
-      <div class="panel"><p class="hint">Coming in Phase 2 — weekly and all-time rankings will show here.</p></div>
+      <div class="tab-row">
+        <button class="tab-btn active" data-lb-tab="players" data-lb-period="week">This Week</button>
+        <button class="tab-btn" data-lb-tab="players" data-lb-period="all">All Time</button>
+        <button class="tab-btn" data-lb-tab="teams">Teams</button>
+      </div>
+      <div id="leaderboard-list" class="panel"><p class="hint">Loading...</p></div>
     </section>
 
     <section id="view-history" class="view hidden">
       <h2>📜 My History</h2>
-      <div class="panel"><p class="hint">Coming in Phase 2 — your past sessions and progress graph will show here.</p></div>
+
+      <div class="panel">
+        <h3 style="margin-top:0;">Progress Over Time</h3>
+        <canvas id="history-chart" height="200"></canvas>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <h3 style="margin-top:0;">AI vs. Peer Fairness Check</h3>
+        <p class="hint" style="margin-top:0;">Do your peers tend to rate you higher or lower than the AI does?</p>
+        <canvas id="fairness-chart" height="140"></canvas>
+      </div>
+
+      <h3 style="margin-top:28px;">Past Sessions</h3>
+      <div id="history-list" class="panel"><p class="hint">Loading...</p></div>
     </section>
 
     <section id="view-admin-rooms" class="view hidden">
