@@ -6,7 +6,8 @@ let roomId = '';
 let localStream = null;
 const peers = {}; // id -> RTCPeerConnection
 const audioEls = {}; // id -> <audio>
-let recognition = null;
+let mediaRecorder = null;
+let recordedChunks = [];
 let isMySpeakingTurn = false;
 let currentSpeakerId = null;
 
@@ -172,7 +173,7 @@ micBtn.onclick = () => {
   micBtn.textContent = track.enabled ? '🎤 Mute' : '🔇 Unmute';
 };
 
-// ---------- Turn / speech recognition ----------
+// ---------- Turn / recording ----------
 socket.on('turn-start', ({ speakerId, speakerName, seconds }) => {
   turnBanner.classList.remove('hidden');
   turnText.textContent = `${speakerName} is speaking...`;
@@ -189,48 +190,58 @@ socket.on('turn-start', ({ speakerId, speakerName, seconds }) => {
   }, 1000);
 
   if (isMySpeakingTurn) {
-    startRecognition();
-  } else {
-    stopRecognition();
+    startRecording();
   }
 });
 
-function startRecognition() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    statusLine.textContent = 'Speech recognition not supported in this browser (try Chrome).';
+socket.on('turn-end', () => {
+  if (isMySpeakingTurn) {
+    stopRecording();
+    isMySpeakingTurn = false;
+    skipBtn.classList.add('hidden');
+    statusLine.textContent = 'Uploading your recording...';
+  }
+});
+
+socket.on('transcribing-status', ({ name }) => {
+  statusLine.textContent = `Transcribing ${name}'s speech...`;
+});
+
+function startRecording() {
+  recordedChunks = [];
+  let options = { mimeType: 'audio/webm;codecs=opus' };
+  if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
+
+  try {
+    mediaRecorder = new MediaRecorder(localStream, options);
+  } catch (e) {
+    statusLine.textContent = 'Recording not supported in this browser.';
+    console.error('MediaRecorder error:', e);
     return;
   }
-  recognition = new SR();
-  recognition.continuous = true;
-  recognition.interimResults = false;
-  recognition.lang = 'en-US';
-  recognition.onresult = (e) => {
-    let text = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) text += e.results[i][0].transcript + ' ';
-    }
-    if (text.trim()) {
-      console.log('Transcript chunk captured:', text.trim());
-      socket.emit('transcript-chunk', { text: text.trim() });
-    }
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
-  recognition.onerror = (e) => {
-    console.error('Speech recognition error:', e.error);
-    statusLine.textContent = 'Speech recognition error: ' + e.error;
+
+  mediaRecorder.onstop = async () => {
+    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+    const buffer = await blob.arrayBuffer();
+    socket.emit('audio-recording', buffer);
   };
-  recognition.onend = () => { if (isMySpeakingTurn) { try { recognition.start(); } catch (e) {} } };
-  try { recognition.start(); } catch (e) { console.error('Could not start recognition:', e); }
+
+  mediaRecorder.start();
 }
 
-function stopRecognition() {
-  isMySpeakingTurn = false;
-  if (recognition) { try { recognition.stop(); } catch (e) {} recognition = null; }
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.stop(); } catch (e) { console.error('Could not stop recording:', e); }
+  }
 }
 
 // ---------- Results ----------
 socket.on('rating-result', (result) => {
-  stopRecognition();
+  stopRecording();
   roomScreen.classList.add('hidden');
   resultsScreen.classList.remove('hidden');
 
@@ -254,7 +265,7 @@ socket.on('rating-result', (result) => {
 });
 
 socket.on('rating-error', (msg) => {
-  stopRecognition();
+  stopRecording();
   roomScreen.classList.add('hidden');
   resultsScreen.classList.remove('hidden');
   bestSpeakerEl.textContent = '⚠️ ' + msg;
