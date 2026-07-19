@@ -8,10 +8,16 @@
 <body>
 <script src="/config.js"></script>
 <script>
-  const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-  supabase.auth.getSession().then(({ data }) => {
-    window.location.href = data.session ? 'dashboard.html' : 'login.html';
-  });
+  (async () => {
+    try {
+      const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+      const { data } = await sb.auth.getSession();
+      window.location.href = data.session ? 'dashboard.html' : 'login.html';
+    } catch (err) {
+      console.error('Redirect check failed:', err);
+      window.location.href = 'login.html';
+    }
+  })();
 </script>
 </body>
 </html>
