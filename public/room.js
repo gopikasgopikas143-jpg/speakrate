@@ -1,4 +1,4 @@
-const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 const socket = io();
 
 const params = new URLSearchParams(window.location.search);
@@ -54,11 +54,11 @@ let myPeerRatings = {};
 (async function initRoom() {
   if (!roomCode) { alert('No room code provided.'); window.location.href = 'dashboard.html'; return; }
 
-  const { data: { session } } = await supabase.auth.getSession();
+  const { data: { session } } = await sb.auth.getSession();
   if (!session) { window.location.href = 'login.html'; return; }
   accessToken = session.access_token;
 
-  const { data: profile } = await supabase.from('profiles').select('name, role').eq('id', session.user.id).single();
+  const { data: profile } = await sb.from('profiles').select('name, role').eq('id', session.user.id).single();
   myName = profile?.name || session.user.email;
 
   roomTitle.textContent = `Room: ${roomCode}`;
