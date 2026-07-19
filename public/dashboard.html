@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpeakRate — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">🎙️ SpeakRate</div>
+    <nav>
+      <a href="#" class="nav-link active" data-view="create-room">➕ Create Room</a>
+      <a href="#" class="nav-link" data-view="join-room">🚪 Join Room</a>
+      <a href="#" class="nav-link" data-view="leaderboard">🏆 Leaderboard</a>
+      <a href="#" class="nav-link" data-view="history">📜 My History</a>
+      <a href="#" class="nav-link hidden" id="admin-nav-link" data-view="admin-rooms">🛡️ Live Rooms (Admin)</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="user-info" class="user-info"></div>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </aside>
+
+  <main class="main-content">
+
+    <section id="view-create-room" class="view">
+      <h2>➕ Create a Room</h2>
+      <div class="panel">
+        <input id="room-name-input" type="text" placeholder="Room name (e.g. Class 10 Practice)" maxlength="40">
+        <input id="room-password-input" type="password" placeholder="Password (optional)">
+        <button id="create-room-btn">Create Room</button>
+        <div id="create-room-result" class="hidden result-box">
+          <p>Room created! Share this code:</p>
+          <div class="room-code-display" id="created-room-code"></div>
+          <button id="enter-created-room-btn">Enter Room</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-join-room" class="view hidden">
+      <h2>🚪 Join a Room</h2>
+      <div class="panel">
+        <input id="join-code-input" type="text" placeholder="Room code" maxlength="10" style="text-transform:uppercase;">
+        <input id="join-password-input" type="password" placeholder="Password (if the room has one)">
+        <button id="join-room-btn">Join Room</button>
+        <p class="hint" id="join-error" style="color:#ff6b6b;"></p>
+      </div>
+    </section>
+
+    <section id="view-leaderboard" class="view hidden">
+      <h2>🏆 Leaderboard</h2>
+      <div class="panel"><p class="hint">Coming in Phase 2 — weekly and all-time rankings will show here.</p></div>
+    </section>
+
+    <section id="view-history" class="view hidden">
+      <h2>📜 My History</h2>
+      <div class="panel"><p class="hint">Coming in Phase 2 — your past sessions and progress graph will show here.</p></div>
+    </section>
+
+    <section id="view-admin-rooms" class="view hidden">
+      <h2>🛡️ Live Rooms</h2>
+      <div class="panel">
+        <button id="refresh-rooms-btn">Refresh</button>
+        <div id="active-rooms-list"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="/config.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>
