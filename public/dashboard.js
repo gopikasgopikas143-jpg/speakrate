@@ -150,11 +150,39 @@ async function loadMyRooms() {
       ? `<span class="badge" style="background:#00cec9;">🟢 live · ${r.memberCount} in room · ${r.state}</span>`
       : `<span class="badge" style="background:#636e72;">not started</span>`;
     div.innerHTML = `<h3>${escapeHtml(r.name)} — ${r.code}</h3>${statusBadge}`;
-    const btn = document.createElement('button');
-    btn.textContent = 'Enter Room';
-    btn.style.marginTop = '10px';
-    btn.onclick = () => window.location.href = `room.html?code=${r.code}`;
-    div.appendChild(btn);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:8px; margin-top:10px;';
+
+    const enterBtn = document.createElement('button');
+    enterBtn.textContent = 'Enter Room';
+    enterBtn.style.cssText = 'margin-bottom:0; flex:1;';
+    enterBtn.onclick = () => window.location.href = `room.html?code=${r.code}`;
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = '🗑️ Delete';
+    deleteBtn.style.cssText = 'margin-bottom:0; width:auto; flex:none; background:#442228; color:#ff8a8a;';
+    deleteBtn.onclick = async () => {
+      if (!confirm(`Delete "${r.name}" (${r.code})? This can't be undone.`)) return;
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Deleting...';
+      const resp = await fetch(`/api/rooms/${r.code}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      });
+      const result = await resp.json();
+      if (!resp.ok) {
+        alert(result.error || 'Could not delete room.');
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '🗑️ Delete';
+        return;
+      }
+      loadMyRooms();
+    };
+
+    btnRow.appendChild(enterBtn);
+    btnRow.appendChild(deleteBtn);
+    div.appendChild(btnRow);
     listEl.appendChild(div);
   });
 }

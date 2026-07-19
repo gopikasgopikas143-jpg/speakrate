@@ -153,6 +153,39 @@ app.get('/api/rooms/mine', async (req, res) => {
   res.json(withStatus);
 });
 
+// Delete a room you created. Only allowed while it isn't currently live
+// with other people in it, to avoid yanking a room out from under a
+// session that's in progress.
+app.delete('/api/rooms/:code', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const roomCode = req.params.code;
+  const { data: dbRoom, error: fetchError } = await supabaseAdmin
+    .from('rooms')
+    .select('id, created_by')
+    .eq('room_code', roomCode)
+    .single();
+  if (fetchError || !dbRoom) return res.status(404).json({ error: 'Room not found.' });
+  if (dbRoom.created_by !== user.id) return res.status(403).json({ error: 'You can only delete rooms you created.' });
+
+  const live = rooms[roomCode];
+  if (live && Object.keys(live.members).length > 0) {
+    return res.status(409).json({ error: 'This room is currently in use — it can\'t be deleted right now.' });
+  }
+
+  const { error: deleteError } = await supabaseAdmin.from('rooms').delete().eq('room_code', roomCode);
+  if (deleteError) return res.status(500).json({ error: deleteError.message });
+
+  if (live) {
+    clearTimeout(live.timer);
+    clearTimeout(live.peerTimer);
+    delete rooms[roomCode];
+  }
+
+  res.json({ success: true });
+});
+
 // ---------- Phase 2: Leaderboard ----------
 function weekAgoIso() {
   return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
