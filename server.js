@@ -4,7 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, { maxHttpBufferSize: 5e6 });
 
 app.use(express.static('public'));
 
@@ -37,12 +37,16 @@ function broadcastRoom(roomId) {
 function startNextTurn(roomId) {
   const room = rooms[roomId];
   if (!room) return;
+
+  const prevSpeakerId = room.turnIndex >= 0 ? room.order[room.turnIndex] : null;
   room.turnIndex += 1;
+
+  if (prevSpeakerId) io.to(prevSpeakerId).emit('turn-end');
 
   if (room.turnIndex >= room.order.length) {
     room.state = 'rating';
     broadcastRoom(roomId);
-    runRating(roomId);
+    if (room.pendingTranscriptions.size === 0) runRating(roomId);
     return;
   }
 
@@ -151,6 +155,7 @@ io.on('connection', (socket) => {
       room = rooms[roomId] = {
         members: {}, order: [], turnIndex: -1,
         transcripts: {}, state: 'waiting', timer: null,
+        pendingTranscriptions: new Set(),
       };
     }
     if (Object.keys(room.members).length >= MAX_ROOM_SIZE) {
@@ -189,12 +194,37 @@ io.on('connection', (socket) => {
     startNextTurn(roomId);
   });
 
-  socket.on('transcript-chunk', ({ text }) => {
+  socket.on('audio-recording', async (buffer) => {
     const roomId = socket.data.roomId;
     const room = rooms[roomId];
     if (!room) return;
-    room.transcripts[socket.id] = (room.transcripts[socket.id] || '') + ' ' + text;
-    console.log(`[${roomId}] transcript from ${socket.data.name}:`, text);
+
+    room.pendingTranscriptions.add(socket.id);
+    io.to(roomId).emit('transcribing-status', { name: socket.data.name });
+
+    try {
+      const form = new FormData();
+      form.append('file', new Blob([buffer], { type: 'audio/webm' }), 'audio.webm');
+      form.append('model', 'whisper-large-v3-turbo');
+
+      const resp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+        body: form,
+      });
+
+      if (!resp.ok) throw new Error(`Whisper API ${resp.status}: ${await resp.text()}`);
+      const data = await resp.json();
+      room.transcripts[socket.id] = (room.transcripts[socket.id] || '') + ' ' + (data.text || '');
+      console.log(`[${roomId}] transcribed audio from ${socket.data.name}:`, data.text);
+    } catch (err) {
+      console.error(`[${roomId}] transcription failed for ${socket.data.name}:`, err.message);
+    } finally {
+      room.pendingTranscriptions.delete(socket.id);
+      if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
+        runRating(roomId);
+      }
+    }
   });
 
   socket.on('skip-turn', () => {
