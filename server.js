@@ -41,7 +41,12 @@ function startNextTurn(roomId) {
   const prevSpeakerId = room.turnIndex >= 0 ? room.order[room.turnIndex] : null;
   room.turnIndex += 1;
 
-  if (prevSpeakerId) io.to(prevSpeakerId).emit('turn-end');
+  if (prevSpeakerId) {
+    // Mark them pending BEFORE telling their client to stop recording,
+    // so we don't race ahead to rating before their audio arrives.
+    room.pendingTranscriptions.add(prevSpeakerId);
+    io.to(prevSpeakerId).emit('turn-end');
+  }
 
   if (room.turnIndex >= room.order.length) {
     room.state = 'rating';
