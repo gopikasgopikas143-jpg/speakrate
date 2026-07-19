@@ -1,12 +1,14 @@
 * { box-sizing: border-box; }
+html { overflow-x: hidden; }
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: linear-gradient(135deg, #1a1a2e, #16213e);
   color: #f0f0f5;
   min-height: 100vh;
+  overflow-x: hidden;
 }
-.screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; width: 100%; }
 .hidden { display: none !important; }
 
 .card {
@@ -36,7 +38,8 @@ button:disabled { background: #444460; cursor: not-allowed; }
 .hint { color: #7a7a9a; font-size: 13px; margin-top: 10px; }
 
 #room-screen { flex-direction: column; align-items: stretch; max-width: 700px; margin: 0 auto; }
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+header h2 { margin: 0; font-size: clamp(18px, 5vw, 24px); word-break: break-word; }
 .badge { background: #6c5ce7; padding: 4px 12px; border-radius: 20px; font-size: 13px; text-transform: uppercase; }
 
 .members-grid {
@@ -58,8 +61,10 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 }
 #turn-timer { font-size: 24px; }
 
-#controls { display: flex; gap: 10px; }
-#controls button { width: auto; flex: 1; }
+#controls { display: flex; gap: 10px; flex-wrap: wrap; }
+#controls button, #controls a { flex: 1 1 140px; }
+#controls a { display: block; }
+#controls a button { width: 100%; }
 
 #status-line { text-align: center; }
 
@@ -71,8 +76,8 @@ header { display: flex; justify-content: space-between; align-items: center; mar
   background: #16162a; border-radius: 10px; padding: 14px; margin-bottom: 10px; text-align: left;
 }
 .score-card h3 { margin: 0 0 6px; }
-.score-row { display: flex; justify-content: space-between; font-size: 13px; color: #a0a0c0; }
-.feedback { margin-top: 8px; font-size: 14px; color: #d0d0e0; }
+.score-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: 13px; color: #a0a0c0; }
+.feedback { margin-top: 8px; font-size: 14px; color: #d0d0e0; word-break: break-word; }
 
 /* ---------- Phase 1 additions ---------- */
 .app-shell { display: flex; min-height: 100vh; }
@@ -112,7 +117,7 @@ select {
   display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
   font-size: 13px; color: #d0d0e0; cursor: pointer;
 }
-.tab-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.tab-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .tab-btn {
   width: auto; flex: none; background: #22223a; color: #d0d0e0;
   padding: 8px 16px; font-size: 13px; margin-bottom: 0;
@@ -137,8 +142,8 @@ select {
 .team-toggle button.selected-b { background: #00cec9; color: #16162a; }
 .member-card.team-a { border-color: #6c5ce7; }
 .member-card.team-b { border-color: #00cec9; }
-.team-results { display: flex; gap: 12px; margin-bottom: 16px; }
-.team-results .score-card { flex: 1; text-align: center; margin-bottom: 0; }
+.team-results { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.team-results .score-card { flex: 1 1 140px; text-align: center; margin-bottom: 0; }
 
 @media (max-width: 700px) {
   .app-shell { flex-direction: column; }
@@ -160,3 +165,39 @@ select {
 audio { width: 100%; margin-top: 8px; }
 .session-type-badge.solo { background: #00cec9; }
 .session-type-badge.conversation { background: #a29bfe; }
+
+/* ---------- Global responsive / mobile fixes ---------- */
+canvas { max-width: 100%; }
+
+@media (max-width: 600px) {
+  .screen { padding: 12px; }
+  .card { padding: 24px 18px; max-width: 100%; }
+  h1 { font-size: 22px; }
+  .subtitle { font-size: 13px; }
+
+  .main-content { padding: 16px; }
+  .sidebar-brand { font-size: 16px; }
+  .nav-link, .nav-link-external { font-size: 13px; padding: 8px 10px; white-space: nowrap; }
+
+  #room-screen, .screen[style*="max-width:600px"], .screen[style*="max-width:700px"] {
+    padding: 12px !important;
+  }
+  header h2 { font-size: 18px; }
+  .panel { padding: 16px; }
+  .room-code-display { font-size: 24px; letter-spacing: 2px; }
+
+  .members-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; }
+  .member-card { padding: 10px 6px; }
+  .member-card .avatar { font-size: 24px; }
+
+  #controls button, #controls a { flex: 1 1 100%; }
+
+  .tab-btn { font-size: 12px; padding: 7px 12px; }
+
+  .chat-bubble { max-width: 92%; }
+}
+
+@media (max-width: 400px) {
+  h1 { font-size: 20px; }
+  .card { padding: 20px 14px; }
+}
