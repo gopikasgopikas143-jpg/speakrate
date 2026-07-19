@@ -1,57 +1,78 @@
-# SpeakRate 🎙️
+# SpeakRate 🎙️ — Phase 1
 
-Students join a voice room (up to 8 people), take turns speaking, and an AI rates every speaker at the end and picks the "best speaker."
+Students sign in, join voice rooms (up to 8 people), speak in turns, get rated by
+AI + their peers, and results are saved to their account history.
 
-## How it works
-- **Voice**: real peer-to-peer audio (WebRTC) between everyone in the room — no paid media server needed.
-- **Turns**: when the host clicks "Start Session," the server picks a random speaking order and gives each person 60 seconds.
-- **Transcription**: each speaker's browser transcribes their own turn live (Chrome's built-in Speech Recognition — free, no API calls).
-- **Rating**: once everyone has spoken, the server sends all transcripts to Claude, which scores each speaker (clarity, fluency, structure, vocabulary, confidence) and picks the best speaker.
+## What's in Phase 1
+- **Auth**: Supabase email/password sign up & sign in, `student`/`admin` roles
+- **Dashboard**: sidebar with Create Room, Join Room, Leaderboard (placeholder),
+  My History (placeholder), Admin-only Live Rooms
+- **Rooms**: create with a name + optional password; join by code; admins bypass
+  passwords
+- **Admin Observer Mode**: admins can silently watch any live room without
+  taking a mic seat
+- **Peer rating**: after everyone speaks, each participant rates every other
+  participant 1-5 stars; final score = 60% AI score + 40% peer average
+- **Persistence**: every completed session is saved to Supabase
+  (`session_results` table) — foundation for Phase 2's Leaderboard/History pages
 
-## 1. Run it locally
+## 1. Set up Supabase (free)
 
-Requirements: Node.js 18+, and an Anthropic API key (get one free at console.anthropic.com — new accounts get starter credit).
+1. Go to supabase.com → New Project (free tier)
+2. Once created, go to **SQL Editor** → New Query → paste the entire contents
+   of `supabase-schema.sql` (included in this project) → Run
+3. Go to **Settings → API** and copy three values:
+   - Project URL → `SUPABASE_URL`
+   - `anon` `public` key → `SUPABASE_ANON_KEY`
+   - `service_role` key (⚠️ keep secret, never expose to the browser) → `SUPABASE_SERVICE_ROLE_KEY`
+
+### Making yourself an admin
+By default every sign-up is a `student`. To make an account an admin, run this
+in Supabase's SQL Editor after signing up once:
+```sql
+update profiles set role = 'admin' where id = (select id from auth.users where email = 'your@email.com');
+```
+
+## 2. Run it locally
 
 ```bash
-cd speakrate
 npm install
 cp .env.example .env
-# edit .env and paste your ANTHROPIC_API_KEY
+# fill in GROQ_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 npm start
 ```
 
-Open `http://localhost:3000` in **two or more browser tabs** (or on two devices), use the same room code, and try it out. Use Chrome — Speech Recognition doesn't work in Firefox/Safari yet.
+Open `http://localhost:3000` — it'll route you to sign up / sign in, then the
+dashboard. Use Chrome. Test with two accounts in two tabs (or incognito for the
+second) to try a room with 2+ people.
 
-## 2. Deploy it for free
+## 3. Deploy (Render, free tier)
 
-**Render.com (recommended, free web service tier):**
-1. Push this folder to a GitHub repo.
-2. Go to render.com → New → Web Service → connect your repo.
-3. Build command: `npm install` — Start command: `npm start`.
-4. Add an environment variable: `ANTHROPIC_API_KEY` = your key.
-5. Deploy. Render gives you a free `https://yourapp.onrender.com` URL — WebRTC needs HTTPS, and Render provides it automatically.
-
-*(Railway.app and Fly.io work the same way if you prefer them — free tiers on both.)*
-
-## 3. Cost reality-check
-- Hosting: $0 on Render's free tier (it sleeps after inactivity on the free plan; fine for a student project, upgrade later if you get real traffic).
-- Voice: $0 — WebRTC is peer-to-peer, browser to browser.
-- AI rating: a few cents per session via the Claude API (only called once, at the end, on text — not audio). Anthropic gives new accounts starter credit.
-
-## Known limitations to plan around (this is a solid MVP, not v1.0)
-- **8-way mesh WebRTC** works well for a classroom-scale MVP, but audio quality/CPU load degrades as you scale up rooms or add video later. If you outgrow it, swap in an SFU like LiveKit (also free/open-source, self-hostable).
-- **Speech Recognition** is Chrome-only and needs a decent mic/quiet room — this is a browser limitation, not something we can fix client-side.
-- **No accounts/history yet** — right now it's session-only. Natural next step: add login (e.g. Google OAuth) + a database (Supabase's free tier is a good fit) to track students' scores over time.
-- **No moderation** — anyone with the room code can join. Fine for a class link shared by a teacher; add a "host approves joiners" step before wider release.
+Same as before — push to GitHub, connect the repo on Render.com, build command
+`npm install`, start command `npm start`, and add ALL FIVE env vars
+(`GROQ_API_KEY`, `GROQ_MODEL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+`SUPABASE_SERVICE_ROLE_KEY`) in Render's Environment tab.
 
 ## File structure
 ```
 speakrate/
-  server.js          # signaling, room/turn logic, AI rating call
-  public/
-    index.html
-    style.css
-    app.js            # WebRTC mesh, mic, speech recognition, UI
+  server.js              # auth, rooms, signaling, peer rating, AI rating, persistence
+  supabase-schema.sql     # run this in Supabase SQL Editor once
   package.json
   .env.example
+  public/
+    index.html            # auth-aware redirect (login or dashboard)
+    login.html / auth.js   # sign in / sign up
+    dashboard.html / dashboard.js   # sidebar shell, create/join room, admin room list
+    room.html / room.js    # the actual voice room (WebRTC, recording, peer rating, results)
+    style.css
 ```
+
+## Known limitations (still true from the MVP, plus new ones)
+- 8-way mesh WebRTC — fine for classroom scale, revisit if you scale up rooms
+- Peer rating waits up to 30 seconds for everyone to submit, then proceeds with
+  whoever did
+- Leaderboard and My History pages are placeholders — that's Phase 2
+- No email confirmation flow handling beyond Supabase's default (check your
+  Supabase Auth settings if sign-ups aren't working — email confirmation may be
+  required depending on your project settings)

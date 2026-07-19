@@ -2,57 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SpeakRate — Voice Practice Rooms</title>
-<link rel="stylesheet" href="style.css">
+<title>SpeakRate</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-
-<div id="join-screen" class="screen">
-  <div class="card">
-    <h1>🎙️ SpeakRate</h1>
-    <p class="subtitle">Join a voice room. Speak your turn. Get rated by AI.</p>
-    <input id="name-input" type="text" placeholder="Your name" maxlength="24">
-    <input id="room-input" type="text" placeholder="Room code (e.g. class-101)" maxlength="24">
-    <button id="join-btn">Join Room</button>
-    <p class="hint">Up to 8 people per room. Same room code = same room.</p>
-  </div>
-</div>
-
-<div id="room-screen" class="screen hidden">
-  <header>
-    <h2 id="room-title">Room</h2>
-    <span id="room-state" class="badge">waiting</span>
-  </header>
-
-  <div id="members-grid" class="members-grid"></div>
-
-  <div id="turn-banner" class="turn-banner hidden">
-    <span id="turn-text"></span>
-    <span id="turn-timer">60</span>
-  </div>
-
-  <div id="controls">
-    <button id="mic-btn">🎤 Mute</button>
-    <button id="start-btn">Start Session</button>
-    <button id="skip-btn" class="hidden">Skip my turn</button>
-  </div>
-
-  <p id="status-line" class="hint"></p>
-</div>
-
-<div id="results-screen" class="screen hidden">
-  <div class="card wide">
-    <h1>🏆 Results</h1>
-    <div id="best-speaker" class="best-speaker"></div>
-    <div id="scores-list"></div>
-    <button id="restart-btn">Back to lobby</button>
-  </div>
-</div>
-
-<audio id="audio-pool" class="hidden"></audio>
-
-<script src="/socket.io/socket.io.js"></script>
-<script src="app.js"></script>
+<script src="/config.js"></script>
+<script>
+  const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  supabase.auth.getSession().then(({ data }) => {
+    window.location.href = data.session ? 'dashboard.html' : 'login.html';
+  });
+</script>
 </body>
 </html>

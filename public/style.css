@@ -73,3 +73,34 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 .score-card h3 { margin: 0 0 6px; }
 .score-row { display: flex; justify-content: space-between; font-size: 13px; color: #a0a0c0; }
 .feedback { margin-top: 8px; font-size: 14px; color: #d0d0e0; }
+
+/* ---------- Phase 1 additions ---------- */
+.app-shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 220px; background: #16162a; padding: 20px 14px;
+  display: flex; flex-direction: column; flex-shrink: 0;
+}
+.sidebar-brand { font-size: 18px; font-weight: 700; margin-bottom: 24px; padding: 0 8px; }
+.sidebar nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-link {
+  color: #d0d0e0; text-decoration: none; padding: 10px 12px; border-radius: 8px; font-size: 14px;
+}
+.nav-link:hover { background: #22223a; }
+.nav-link.active { background: #6c5ce7; color: white; }
+.sidebar-footer { border-top: 1px solid #2a2a45; padding-top: 14px; margin-top: 14px; }
+.user-info { font-size: 13px; margin-bottom: 10px; padding: 0 8px; }
+.main-content { flex: 1; padding: 32px; max-width: 720px; }
+.view h2 { margin-top: 0; }
+.panel { background: #22223a; border-radius: 12px; padding: 24px; }
+.result-box { margin-top: 16px; text-align: center; }
+.room-code-display {
+  font-size: 32px; font-weight: 700; letter-spacing: 4px; color: #6c5ce7;
+  background: #16162a; padding: 12px; border-radius: 8px; margin: 10px 0;
+}
+.stars { display: flex; gap: 4px; margin-top: 6px; }
+@media (max-width: 700px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; flex-direction: row; overflow-x: auto; align-items: center; }
+  .sidebar nav { flex-direction: row; }
+  .sidebar-footer { display: none; }
+}
