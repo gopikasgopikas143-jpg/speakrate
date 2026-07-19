@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpeakRate — Sign In</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div class="screen">
+  <div class="card">
+    <h1>🎙️ SpeakRate</h1>
+    <p class="subtitle" id="mode-subtitle">Sign in to your account</p>
+
+    <div id="name-field" class="hidden">
+      <input id="name-input" type="text" placeholder="Your full name" maxlength="40">
+    </div>
+    <input id="email-input" type="email" placeholder="Email">
+    <input id="password-input" type="password" placeholder="Password">
+
+    <button id="submit-btn">Sign In</button>
+    <p class="hint" id="error-msg" style="color:#ff6b6b;"></p>
+
+    <p class="hint">
+      <span id="toggle-text">Don't have an account?</span>
+      <a href="#" id="toggle-link" style="color:#a29bfe;">Sign up</a>
+    </p>
+  </div>
+</div>
+
+<script src="/config.js"></script>
+<script src="auth.js"></script>
+</body>
+</html>
