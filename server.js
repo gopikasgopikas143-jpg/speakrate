@@ -79,7 +79,9 @@ async function runRating(roomId) {
     .map((e, i) => `Speaker ${i + 1} (name: "${e.name}", id: "${e.id}"):\n"""${e.text}"""`)
     .join('\n\n');
 
-  const prompt = `You are judging a student speaking-practice session. Below are transcripts from each speaker's turn (roughly 60 seconds each). Rate each speaker on: Clarity, Fluency (filler words/pauses), Structure, Vocabulary, and Confidence — each out of 10 — plus an Overall score out of 10. Give each speaker 1-2 sentences of constructive feedback. Then name the single best speaker overall.
+  const prompt = `You are judging a student speaking-practice session with EXACTLY ${entries.length} speakers. Below are transcripts from each speaker's turn (roughly 60 seconds each). Rate each speaker on: Clarity, Fluency (filler words/pauses), Structure, Vocabulary, and Confidence — each out of 10 — plus an Overall score out of 10. Give each speaker 1-2 sentences of constructive feedback. Then name the single best speaker overall.
+
+CRITICAL: Your "scores" array MUST contain EXACTLY ${entries.length} objects — one for every single speaker id listed below (${entries.map(e => e.id).join(', ')}). Do not skip, merge, or omit any speaker, even if their transcript is short.
 
 Respond ONLY with valid JSON, no markdown fences, in this exact shape:
 {
@@ -116,6 +118,20 @@ ${transcriptBlock}`;
     const raw = (data.choices?.[0]?.message?.content || '').trim()
       .replace(/^```json/i, '').replace(/```$/, '').trim();
     const result = JSON.parse(raw);
+
+    // Safety net: if the model dropped any speaker, fill them in so nobody silently disappears
+    const returnedIds = new Set((result.scores || []).map(s => s.id));
+    for (const e of entries) {
+      if (!returnedIds.has(e.id)) {
+        console.warn(`[${roomId}] model omitted speaker ${e.name} (${e.id}) — adding placeholder`);
+        result.scores.push({
+          id: e.id, name: e.name, clarity: 0, fluency: 0, structure: 0,
+          vocabulary: 0, confidence: 0, overall: 0,
+          feedback: 'Score unavailable — please re-run rating.',
+        });
+      }
+    }
+
     room.state = 'done';
     io.to(roomId).emit('rating-result', result);
     broadcastRoom(roomId);
