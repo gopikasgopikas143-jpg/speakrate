@@ -447,7 +447,7 @@ ${transcriptBlock}`;
       if (received.length > 0) {
         const peerAvg5 = received.reduce((a, b) => a + b, 0) / received.length;
         s.peerAverage = +(peerAvg5 * 2).toFixed(1); // scale 1-5 -> /10
-        s.finalScore = +(0.6 * s.overall + 0.4 * s.peerAverage).toFixed(1);
+        s.finalScore = +(0.4 * s.overall + 0.6 * s.peerAverage).toFixed(1);
       } else {
         s.peerAverage = null;
         s.finalScore = s.overall;
