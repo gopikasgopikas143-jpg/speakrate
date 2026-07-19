@@ -93,6 +93,46 @@ app.get('/api/rooms/active', async (req, res) => {
   res.json(active);
 });
 
+// Any signed-in user can browse currently-live rooms to join (no password shown, just whether one's needed)
+app.get('/api/rooms/browse', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const active = Object.entries(rooms)
+    .filter(([, r]) => r.state === 'waiting' && Object.keys(r.members).length < MAX_ROOM_SIZE)
+    .map(([code, r]) => ({
+      code, name: r.name,
+      memberCount: Object.keys(r.members).length,
+      hasPassword: !!r.passwordHash,
+    }));
+  res.json(active);
+});
+
+// Rooms the current user has created, with live status if currently active
+app.get('/api/rooms/mine', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const { data, error } = await supabaseAdmin
+    .from('rooms')
+    .select('room_code, name, created_at')
+    .eq('created_by', user.id)
+    .order('created_at', { ascending: false })
+    .limit(10);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const withStatus = (data || []).map(r => {
+    const live = rooms[r.room_code];
+    return {
+      code: r.room_code, name: r.name, createdAt: r.created_at,
+      isLive: !!live,
+      memberCount: live ? Object.keys(live.members).length : 0,
+      state: live ? live.state : 'not started',
+    };
+  });
+  res.json(withStatus);
+});
+
 // ---------- In-memory live room state ----------
 // rooms: { [roomCode]: {
 //   dbId, name, passwordHash, members: {socketId: {name,userId,role}}, observers: Set<socketId>,
