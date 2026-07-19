@@ -1,4 +1,4 @@
-const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 let isSignUpMode = false;
 
@@ -13,9 +13,20 @@ const toggleText = document.getElementById('toggle-text');
 const toggleLink = document.getElementById('toggle-link');
 
 // If already signed in, go straight to dashboard
-supabase.auth.getSession().then(({ data }) => {
+sb.auth.getSession().then(({ data }) => {
   if (data.session) window.location.href = 'dashboard.html';
 });
+
+document.getElementById('google-btn').onclick = async () => {
+  const { error } = await sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin + '/dashboard.html' },
+  });
+  if (error) {
+    errorMsg.style.color = '#ff6b6b';
+    errorMsg.textContent = error.message;
+  }
+};
 
 toggleLink.onclick = (e) => {
   e.preventDefault();
@@ -45,7 +56,7 @@ submitBtn.onclick = async () => {
     if (isSignUpMode) {
       const name = nameInput.value.trim();
       if (!name) { errorMsg.textContent = 'Enter your name.'; submitBtn.disabled = false; submitBtn.textContent = 'Sign Up'; return; }
-      const { error } = await supabase.auth.signUp({
+      const { error } = await sb.auth.signUp({
         email, password,
         options: { data: { name } },
       });
@@ -56,7 +67,7 @@ submitBtn.onclick = async () => {
       submitBtn.textContent = 'Sign Up';
       return;
     } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
       window.location.href = 'dashboard.html';
     }
