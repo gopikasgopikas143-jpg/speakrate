@@ -297,12 +297,36 @@ async function loadHistory() {
     const topicBit = r.topic ? `<div class="hint" style="margin:4px 0 0;">Topic: ${escapeHtml(r.topic)}</div>` : '';
 
     div.innerHTML = `
-      <h3>${escapeHtml(r.room_name || 'Practice Session')} <span style="opacity:.6;font-weight:400;font-size:12px;">${date}</span></h3>
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <h3 style="margin:0;">${escapeHtml(r.room_name || 'Practice Session')} <span style="opacity:.6;font-weight:400;font-size:12px;">${date}</span></h3>
+        <button class="delete-history-btn" data-id="${r.id}" title="Delete this session" style="width:auto; flex:none; margin:0; padding:6px 10px; font-size:12px; background:#3a2a3a; color:#ff8a8a;">🗑️</button>
+      </div>
       <div style="margin-bottom:6px;">${typeBit}</div>
       ${topicBit}
       <div class="score-row"><span>AI: ${r.ai_overall}/10</span><span>${peerBit}</span><span><strong>Final: ${r.final_score}/10</strong></span></div>
       <div class="score-row"><span>Filler words: ${r.filler_word_count ?? '—'}</span><span>${r.words_per_minute ?? '—'} wpm</span></div>
       <div style="margin-top:6px; display:flex; gap:6px;">${teamBit}${bestBit}</div>`;
+
+    div.querySelector('.delete-history-btn').addEventListener('click', async () => {
+      if (!confirm('Delete this session from your history? This cannot be undone.')) return;
+      const btn = div.querySelector('.delete-history-btn');
+      btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/history/${r.id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        const result = await resp.json();
+        if (!resp.ok) throw new Error(result.error || 'Could not delete session.');
+        div.remove();
+        const remaining = data.filter(x => x.id !== r.id);
+        renderHistoryChart(remaining);
+        renderFairnessChart(remaining);
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
 
     if (r.audio_url) {
       if (r.session_type === 'conversation') {
