@@ -256,7 +256,7 @@ app.get('/api/leaderboard', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Please sign in.' });
 
   const period = req.query.period === 'week' ? 'week' : 'all';
-  let query = supabaseAdmin.from('session_results').select('user_id, final_score, created_at').eq('session_type', 'room');
+  let query = supabaseAdmin.from('session_results').select('user_id, final_score, created_at, session_type');
   if (period === 'week') query = query.gte('created_at', weekAgoIso());
 
   const { data, error } = await query;
@@ -265,9 +265,10 @@ app.get('/api/leaderboard', async (req, res) => {
   const byUser = {};
   for (const row of data || []) {
     if (!row.user_id) continue;
-    if (!byUser[row.user_id]) byUser[row.user_id] = { total: 0, count: 0 };
+    if (!byUser[row.user_id]) byUser[row.user_id] = { total: 0, count: 0, types: new Set() };
     byUser[row.user_id].total += row.final_score || 0;
     byUser[row.user_id].count += 1;
+    byUser[row.user_id].types.add(row.session_type || 'room');
   }
   const userIds = Object.keys(byUser);
   if (userIds.length === 0) return res.json([]);
@@ -275,12 +276,14 @@ app.get('/api/leaderboard', async (req, res) => {
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, name').in('id', userIds);
   const nameMap = Object.fromEntries((profiles || []).map(p => [p.id, p.name]));
 
+  const typeOrder = ['room', 'solo', 'conversation'];
   const rows = userIds
     .map(id => ({
       userId: id,
       name: nameMap[id] || 'Unknown',
       avgFinalScore: +(byUser[id].total / byUser[id].count).toFixed(2),
       sessionCount: byUser[id].count,
+      types: typeOrder.filter(t => byUser[id].types.has(t)),
     }))
     .sort((a, b) => b.avgFinalScore - a.avgFinalScore)
     .map((r, i) => ({ rank: i + 1, ...r }));
@@ -568,6 +571,18 @@ function startNextTurn(roomCode) {
     io.to(prevSpeakerId).emit('turn-end');
   }
 
+  beginTurnAtCurrentIndex(roomCode);
+}
+
+// Starts whoever is at room.turnIndex right now, without touching the
+// previous speaker's pending-transcription bookkeeping. Used both by
+// startNextTurn (after normally advancing) and by the disconnect handler
+// (when we need to skip straight past someone who just left mid-turn,
+// without waiting on audio that will never arrive).
+function beginTurnAtCurrentIndex(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+
   if (room.turnIndex >= room.order.length) {
     startPeerRating(roomCode);
     return;
@@ -731,7 +746,7 @@ async function persistSessionResults(roomCode, room, result) {
     room_name: room.name,
     session_type: 'room',
     topic: room.topic || null,
-    user_id: room.members[s.id]?.userId || null,
+    user_id: room.memberInfo[s.id]?.userId || null,
     speaker_name: s.name,
     clarity: s.clarity, fluency: s.fluency, structure: s.structure,
     vocabulary: s.vocabulary, confidence: s.confidence,
@@ -904,7 +919,7 @@ io.on('connection', (socket) => {
       room = rooms[roomCode] = {
         dbId: dbRoom.id, name: dbRoom.name, passwordHash: dbRoom.password_hash,
         hostUserId: dbRoom.created_by, topic: dbRoom.topic || null, teamMode: !!dbRoom.team_mode,
-        members: {}, observers: new Set(), teams: {}, order: [], turnIndex: -1,
+        members: {}, observers: new Set(), teams: {}, order: [], turnIndex: -1, memberInfo: {},
         transcripts: {}, pendingTranscriptions: new Set(), peerRatings: {},
         state: 'waiting', timer: null, peerTimer: null,
       };
@@ -937,6 +952,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = roomCode;
     socket.data.name = profile.name;
     room.members[socket.id] = { name: profile.name, userId: user.id, role: profile.role };
+    room.memberInfo[socket.id] = { name: profile.name, userId: user.id };
 
     const existingIds = Object.keys(room.members).filter(id => id !== socket.id);
     socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
@@ -1058,15 +1074,54 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const wasCurrentSpeaker = room.state === 'speaking' && room.order[room.turnIndex] === socket.id;
+
     delete room.members[socket.id];
+    // They can no longer upload audio for a turn that was in flight, so drop
+    // any pending-transcription entry for them — otherwise runRating() waits
+    // forever for audio that will never arrive and the whole room gets stuck.
+    room.pendingTranscriptions.delete(socket.id);
+
+    // Remove them from the speaking queue. If they hadn't spoken yet, this
+    // just skips their slot. If it was already their turn, the next
+    // speaker shifts into room.turnIndex automatically (array shrinks by one).
+    const orderIdx = room.order.indexOf(socket.id);
+    if (orderIdx !== -1) {
+      room.order.splice(orderIdx, 1);
+      if (orderIdx < room.turnIndex) {
+        room.turnIndex -= 1;
+      }
+    }
+
     socket.to(roomCode).emit('peer-left', { id: socket.id });
+
     if (Object.keys(room.members).length === 0 && room.observers.size === 0) {
       clearTimeout(room.timer);
       clearTimeout(room.peerTimer);
       delete rooms[roomCode];
-    } else {
-      broadcastRoom(roomCode);
+      return;
     }
+
+    if (wasCurrentSpeaker) {
+      // Nobody can finish their turn for them — move on immediately instead
+      // of leaving everyone staring at a "speaking" banner for someone who's
+      // gone (and with no skip-turn owner left to dismiss it) for a full minute.
+      clearTimeout(room.timer);
+      beginTurnAtCurrentIndex(roomCode);
+    } else if (room.state === 'peer-rating') {
+      // If they were the only member still expected to submit ratings,
+      // unblock the room instead of waiting out the full rating timer.
+      const memberIds = Object.keys(room.members);
+      const submittedIds = Object.keys(room.peerRatings);
+      if (memberIds.length > 0 && memberIds.every(id => submittedIds.includes(id))) {
+        finishPeerRating(roomCode);
+      }
+    } else if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
+      // They were the last pending transcription — safe to score now.
+      runRating(roomCode);
+    }
+
+    broadcastRoom(roomCode);
   });
 });
 
