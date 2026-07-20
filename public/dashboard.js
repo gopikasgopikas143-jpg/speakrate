@@ -33,6 +33,12 @@ document.getElementById('logout-btn').onclick = async () => {
 };
 
 // ---------- Nav ----------
+const sidebarEl = document.querySelector('.sidebar');
+const navToggleBtn = document.getElementById('nav-toggle-btn');
+if (navToggleBtn) {
+  navToggleBtn.onclick = () => sidebarEl.classList.toggle('nav-open');
+}
+
 document.querySelectorAll('.nav-link').forEach(link => {
   link.onclick = (e) => {
     e.preventDefault();
@@ -45,6 +51,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     if (link.dataset.view === 'create-room') loadMyRooms();
     if (link.dataset.view === 'leaderboard') loadLeaderboard(currentLbTab, currentLbPeriod);
     if (link.dataset.view === 'history') loadHistory();
+    if (sidebarEl) sidebarEl.classList.remove('nav-open'); // close the mobile dropdown after picking a view
   };
 });
 
