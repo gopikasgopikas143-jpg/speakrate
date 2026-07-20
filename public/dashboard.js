@@ -261,9 +261,16 @@ async function loadLeaderboard(tab, period) {
         <h3>#${row.rank} — Team ${escapeHtml(row.team)} <span style="opacity:.7;font-weight:400;font-size:13px;">(${escapeHtml(row.roomName)} · ${row.roomCode})</span></h3>
         <div class="score-row"><span>${row.memberCount} member${row.memberCount === 1 ? '' : 's'}</span><span><strong>${row.avgScore}/10</strong></span></div>`;
     } else {
+      const typeLabels = { room: '👥 Room', solo: '🎤 Solo', conversation: '💬 AI' };
+      const badgesHtml = (row.types || [])
+        .map(t => `<span class="badge session-type-badge ${t}">${typeLabels[t] || t}</span>`)
+        .join(' ');
       div.innerHTML = `
-        <h3>#${row.rank} — ${escapeHtml(row.name)}</h3>
-        <div class="score-row"><span>${row.sessionCount} session${row.sessionCount === 1 ? '' : 's'}</span><span><strong>${row.avgFinalScore}/10</strong></span></div>`;
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+          <h3 style="margin:0;">#${row.rank} — ${escapeHtml(row.name)}</h3>
+          <div style="display:flex; gap:4px; flex-wrap:wrap;">${badgesHtml}</div>
+        </div>
+        <div class="score-row" style="margin-top:6px;"><span>${row.sessionCount} session${row.sessionCount === 1 ? '' : 's'}</span><span><strong>${row.avgFinalScore}/10</strong></span></div>`;
     }
     listEl.appendChild(div);
   });
