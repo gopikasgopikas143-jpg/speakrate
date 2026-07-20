@@ -343,6 +343,26 @@ app.get('/api/history/mine', async (req, res) => {
   res.json(data || []);
 });
 
+// ---------- Phase 2: Delete a history entry ----------
+app.delete('/api/history/:id', async (req, res) => {
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+
+  const { id } = req.params;
+  const { data: row, error: fetchError } = await supabaseAdmin
+    .from('session_results')
+    .select('id, user_id')
+    .eq('id', id)
+    .single();
+  if (fetchError || !row) return res.status(404).json({ error: 'Session not found.' });
+  if (row.user_id !== user.id) return res.status(403).json({ error: 'You can only delete your own sessions.' });
+
+  const { error: deleteError } = await supabaseAdmin.from('session_results').delete().eq('id', id);
+  if (deleteError) return res.status(500).json({ error: deleteError.message });
+
+  res.json({ success: true });
+});
+
 // ---------- Phase 2: Badges ----------
 app.get('/api/badges/mine', async (req, res) => {
   const user = await verifyUser(bearerToken(req));
