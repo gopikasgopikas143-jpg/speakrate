@@ -74,7 +74,13 @@ let myPeerRatings = {};
 
   if (!isObserver) {
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  }
+});
     } catch (e) {
       alert('Microphone access is required to join a room.');
       window.location.href = 'dashboard.html';
@@ -106,9 +112,11 @@ socket.on('joined-info', ({ isHost: hostFlag }) => {
 });
 
 socket.on('existing-peers', (peerList) => {
-  peerList.forEach(p => createPeerConnection(p.id, true));
+  peerList.forEach(p => createPeerConnection(p.id, !isObserver));
 });
-
+socket.on('observer-joined-peer', ({ id }) => {
+  createPeerConnection(id, true);
+});
 socket.on('peer-joined', ({ id }) => { createPeerConnection(id, false); });
 
 socket.on('peer-left', ({ id }) => {
@@ -124,7 +132,13 @@ function createPeerConnection(peerId, isInitiator) {
   if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
   pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: peerId, data: { candidate: e.candidate } }); };
+  pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: peerId, data: { candidate: e.candidate } }); };
 
+pc.oniceconnectionstatechange = () => {
+  if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+    pc.restartIce();
+  }
+};
   pc.ontrack = (e) => {
     let audioEl = audioEls[peerId];
     if (!audioEl) {
