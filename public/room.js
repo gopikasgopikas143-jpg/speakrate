@@ -132,7 +132,7 @@ function createPeerConnection(peerId, isInitiator) {
   if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
   pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: peerId, data: { candidate: e.candidate } }); };
-  pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: peerId, data: { candidate: e.candidate } }); };
+  
 
 pc.oniceconnectionstatechange = () => {
   if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
