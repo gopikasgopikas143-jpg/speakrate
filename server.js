@@ -967,15 +967,22 @@ io.on('connection', (socket) => {
     }
 
     // Admin observer mode: watch only, no mic seat, not part of speaking order
-    if (observerMode && isAdmin) {
-      socket.join(roomCode);
-      socket.data.roomCode = roomCode;
-      socket.data.isObserver = true;
-      room.observers.add(socket.id);
-      socket.emit('observer-joined', roomSummary(roomCode));
-      broadcastRoom(roomCode);
-      return;
-    }
+   if (observerMode && isAdmin) {
+  socket.join(roomCode);
+  socket.data.roomCode = roomCode;
+  socket.data.isObserver = true;
+  room.observers.add(socket.id);
+ const existingIds = Object.keys(room.members);
+  socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
+
+   existingIds.forEach(memberId => {
+    io.to(memberId).emit('observer-joined-peer', { id: socket.id });
+  });
+
+  socket.emit('observer-joined', roomSummary(roomCode));
+  broadcastRoom(roomCode);
+  return;
+}
 
     if (room.state !== 'waiting') return socket.emit('join-error', 'Session already in progress.');
     if (Object.keys(room.members).length >= MAX_ROOM_SIZE) return socket.emit('join-error', 'Room is full (max 8).');
@@ -989,7 +996,9 @@ io.on('connection', (socket) => {
     const existingIds = Object.keys(room.members).filter(id => id !== socket.id);
     socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
     socket.to(roomCode).emit('peer-joined', { id: socket.id, name: profile.name });
-
+    room.observers.forEach(obsId => {
+  socket.emit('observer-joined-peer', { id: obsId });
+});
     socket.emit('joined-info', { isHost: user.id === room.hostUserId });
     broadcastRoom(roomCode);
   });
