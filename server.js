@@ -8,7 +8,17 @@ const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 5e6 });
+const io = new Server(server, {
+  maxHttpBufferSize: 5e6,
+  connectionStateRecovery: {
+    // Reconnecting within this window hands the client back the SAME socket.id
+    // (Socket.IO restores socket.data too, e.g. socket.data.roomCode). Combined
+    // with the disconnect grace-period below, this is what stops brief wifi
+    // drops / laptop sleep from ejecting someone from a live room.
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true,
+  },
+});
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -19,6 +29,10 @@ const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const MAX_ROOM_SIZE = 8;
 const TURN_SECONDS = 60;
 const PEER_RATING_SECONDS = 30;
+// How long we wait after a socket disconnects before treating it as a real
+// departure. Covers brief wifi drops / laptop sleep / tab backgrounding —
+// the far more common case in a live classroom than someone actually leaving.
+const DISCONNECT_GRACE_MS = 15 * 1000;
 
 // ---------- Filler word / WPM analytics (Phase 2) ----------
 const SINGLE_TOKEN_FILLERS = new Set(['um', 'uh', 'like', 'so', 'actually']);
@@ -910,6 +924,18 @@ async function checkFluencyClimbBadge(userId) {
 
 // ---------- Socket.io ----------
 io.on('connection', (socket) => {
+  // Socket.IO handed this socket back its previous id + socket.data after a
+  // brief disconnect (see connectionStateRecovery above). If we'd started a
+  // grace-period timer to eventually remove them, cancel it — they're back
+  // before anyone else even needed to notice they were gone.
+  if (socket.recovered && socket.data.roomCode) {
+    const room = rooms[socket.data.roomCode];
+    if (room && room.pendingDisconnects && room.pendingDisconnects[socket.id]) {
+      clearTimeout(room.pendingDisconnects[socket.id]);
+      delete room.pendingDisconnects[socket.id];
+    }
+  }
+
   socket.on('join-room', async ({ roomCode, password, token, observerMode }) => {
     if (!roomCode) return socket.emit('join-error', 'Room code is required.');
 
@@ -1075,61 +1101,85 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     if (socket.data.isObserver) {
+      // Observers don't hold a mic seat or affect turn order/scoring, so it's
+      // safe to remove them right away — no grace period needed.
       room.observers.delete(socket.id);
       broadcastRoom(roomCode);
       return;
     }
 
-    const wasCurrentSpeaker = room.state === 'speaking' && room.order[room.turnIndex] === socket.id;
-
-    delete room.members[socket.id];
-    // They can no longer upload audio for a turn that was in flight, so drop
-    // any pending-transcription entry for them — otherwise runRating() waits
-    // forever for audio that will never arrive and the whole room gets stuck.
-    room.pendingTranscriptions.delete(socket.id);
-
-    // Remove them from the speaking queue. If they hadn't spoken yet, this
-    // just skips their slot. If it was already their turn, the next
-    // speaker shifts into room.turnIndex automatically (array shrinks by one).
-    const orderIdx = room.order.indexOf(socket.id);
-    if (orderIdx !== -1) {
-      room.order.splice(orderIdx, 1);
-      if (orderIdx < room.turnIndex) {
-        room.turnIndex -= 1;
-      }
-    }
-
-    socket.to(roomCode).emit('peer-left', { id: socket.id });
-
-    if (Object.keys(room.members).length === 0 && room.observers.size === 0) {
-      clearTimeout(room.timer);
-      clearTimeout(room.peerTimer);
-      delete rooms[roomCode];
-      return;
-    }
-
-    if (wasCurrentSpeaker) {
-      // Nobody can finish their turn for them — move on immediately instead
-      // of leaving everyone staring at a "speaking" banner for someone who's
-      // gone (and with no skip-turn owner left to dismiss it) for a full minute.
-      clearTimeout(room.timer);
-      beginTurnAtCurrentIndex(roomCode);
-    } else if (room.state === 'peer-rating') {
-      // If they were the only member still expected to submit ratings,
-      // unblock the room instead of waiting out the full rating timer.
-      const memberIds = Object.keys(room.members);
-      const submittedIds = Object.keys(room.peerRatings);
-      if (memberIds.length > 0 && memberIds.every(id => submittedIds.includes(id))) {
-        finishPeerRating(roomCode);
-      }
-    } else if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
-      // They were the last pending transcription — safe to score now.
-      runRating(roomCode);
-    }
-
-    broadcastRoom(roomCode);
+    // Don't treat this as a real departure yet — it's very likely a brief
+    // wifi drop, laptop sleep, or backgrounded tab, especially on a shared
+    // classroom network. Give them DISCONNECT_GRACE_MS to reconnect (Socket.IO's
+    // connectionStateRecovery will hand them back the same socket.id, which
+    // cancels this timer up above in the 'connection' handler). Only if they
+    // don't come back in time do we actually pull them out of the room.
+    room.pendingDisconnects = room.pendingDisconnects || {};
+    room.pendingDisconnects[socket.id] = setTimeout(() => {
+      delete room.pendingDisconnects[socket.id];
+      finalizeDeparture(roomCode, socket.id);
+    }, DISCONNECT_GRACE_MS);
   });
 });
+
+// Actually removes a member who never reconnected after the grace period —
+// this is the logic that used to run directly inside 'disconnect'.
+function finalizeDeparture(roomCode, socketId) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  // They reconnected (with a new socket.id) and rejoined through some other
+  // path in the meantime — nothing to clean up.
+  if (room.members[socketId] === undefined && room.order.indexOf(socketId) === -1) return;
+
+  const wasCurrentSpeaker = room.state === 'speaking' && room.order[room.turnIndex] === socketId;
+
+  delete room.members[socketId];
+  // They can no longer upload audio for a turn that was in flight, so drop
+  // any pending-transcription entry for them — otherwise runRating() waits
+  // forever for audio that will never arrive and the whole room gets stuck.
+  room.pendingTranscriptions.delete(socketId);
+
+  // Remove them from the speaking queue. If they hadn't spoken yet, this
+  // just skips their slot. If it was already their turn, the next
+  // speaker shifts into room.turnIndex automatically (array shrinks by one).
+  const orderIdx = room.order.indexOf(socketId);
+  if (orderIdx !== -1) {
+    room.order.splice(orderIdx, 1);
+    if (orderIdx < room.turnIndex) {
+      room.turnIndex -= 1;
+    }
+  }
+
+  io.to(roomCode).emit('peer-left', { id: socketId });
+
+  if (Object.keys(room.members).length === 0 && room.observers.size === 0) {
+    clearTimeout(room.timer);
+    clearTimeout(room.peerTimer);
+    delete rooms[roomCode];
+    return;
+  }
+
+  if (wasCurrentSpeaker) {
+    // Nobody can finish their turn for them — move on immediately instead
+    // of leaving everyone staring at a "speaking" banner for someone who's
+    // gone (and with no skip-turn owner left to dismiss it) for a full minute.
+    clearTimeout(room.timer);
+    beginTurnAtCurrentIndex(roomCode);
+  } else if (room.state === 'peer-rating') {
+    // If they were the only member still expected to submit ratings,
+    // unblock the room instead of waiting out the full rating timer.
+    const memberIds = Object.keys(room.members);
+    const submittedIds = Object.keys(room.peerRatings);
+    if (memberIds.length > 0 && memberIds.every(id => submittedIds.includes(id))) {
+      finishPeerRating(roomCode);
+    }
+  } else if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
+    // They were the last pending transcription — safe to score now.
+    runRating(roomCode);
+  }
+
+  broadcastRoom(roomCode);
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`SpeakRate running on port ${PORT}`));
