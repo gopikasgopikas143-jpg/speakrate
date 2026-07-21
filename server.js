@@ -360,6 +360,12 @@ app.delete('/api/history/:id', async (req, res) => {
   if (fetchError || !row) return res.status(404).json({ error: 'Session not found.' });
   if (row.user_id !== user.id) return res.status(403).json({ error: 'You can only delete your own sessions.' });
 
+  // Some badges (e.g. "Filler Words Cut in Half") reference the session they
+  // were earned from via badges.session_id, which has a foreign key to this
+  // table — delete those first or the session_results delete gets rejected.
+  const { error: badgeDeleteError } = await supabaseAdmin.from('badges').delete().eq('session_id', id);
+  if (badgeDeleteError) return res.status(500).json({ error: badgeDeleteError.message });
+
   const { error: deleteError } = await supabaseAdmin.from('session_results').delete().eq('id', id);
   if (deleteError) return res.status(500).json({ error: deleteError.message });
 
