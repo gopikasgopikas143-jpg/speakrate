@@ -6,6 +6,7 @@
 <title>SpeakRate — Room</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.9.2/dist/livekit-client.umd.min.js"></script>
 </head>
 <body>
 
@@ -26,6 +27,21 @@
   </div>
 
   <div id="members-grid" class="members-grid"></div>
+
+  <div id="gd-start-panel" class="panel hidden">
+    <h3 style="margin-top:0;">Group Discussion Mode</h3>
+    <p class="hint">Anyone can request the floor once the discussion starts — only one person can hold it at a time.</p>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <label for="gd-duration-input" style="width:auto;">Duration (minutes)</label>
+      <input id="gd-duration-input" type="number" min="1" max="60" value="5" style="width:80px; margin-bottom:0;">
+      <button id="start-gd-btn" type="button" style="width:auto; white-space:nowrap;">Start Discussion</button>
+    </div>
+  </div>
+
+  <div id="gd-banner" class="turn-banner hidden" style="background:#0984e3;">
+    <span id="gd-status-text">Group discussion in progress...</span>
+    <span id="gd-timer">--:--</span>
+  </div>
 
   <div id="turn-banner" class="turn-banner hidden">
     <span id="turn-text"></span>
@@ -56,6 +72,7 @@
   <div class="card wide">
     <h1>🏆 Results</h1>
     <div id="best-speaker" class="best-speaker"></div>
+    <div id="gd-participation-banner" class="hint hidden"></div>
     <div id="team-results" class="team-results hidden"></div>
     <div id="scores-list"></div>
     <a href="dashboard.html" style="text-decoration:none;"><button>Back to Dashboard</button></a>
