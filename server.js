@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
+const { AccessToken } = require('livekit-server-sdk');
 
 const app = express();
 const server = http.createServer(app);
@@ -29,6 +30,12 @@ const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const MAX_ROOM_SIZE = 8;
 const TURN_SECONDS = 60;
 const PEER_RATING_SECONDS = 30;
+// ---------- LiveKit (replaces raw WebRTC mesh) ----------
+const LIVEKIT_URL = process.env.LIVEKIT_URL;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+// ---------- GD Mode (floor-controlled free discussion) ----------
+const GD_DEFAULT_MINUTES = 5;
 // How long we wait after a socket disconnects before treating it as a real
 // departure. Covers brief wifi drops / laptop sleep / tab backgrounding —
 // the far more common case in a live classroom than someone actually leaving.
@@ -157,19 +164,77 @@ app.post('/api/rooms', async (req, res) => {
   const user = await verifyUser(bearerToken(req));
   if (!user) return res.status(401).json({ error: 'Please sign in.' });
 
-  const { name, password, topic, teamMode } = req.body || {};
+  const { name, password, topic, teamMode, sessionMode } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Room name is required.' });
 
   const roomCode = generateRoomCode();
   const passwordHash = password ? bcrypt.hashSync(password, 10) : null;
+  const resolvedSessionMode = sessionMode === 'gd' ? 'gd' : 'fixed-turn';
 
   const { error } = await supabaseAdmin.from('rooms').insert([{
     room_code: roomCode, name: name.trim(), password_hash: passwordHash, created_by: user.id,
     topic: topic && topic.trim() ? topic.trim() : null, team_mode: !!teamMode,
+    session_mode: resolvedSessionMode,
   }]);
   if (error) return res.status(500).json({ error: error.message });
 
-  res.json({ roomCode, name: name.trim(), topic: topic || null, teamMode: !!teamMode });
+  res.json({ roomCode, name: name.trim(), topic: topic || null, teamMode: !!teamMode, sessionMode: resolvedSessionMode });
+});
+
+// ---------- LiveKit token endpoint (replaces the raw WebRTC 'signal' relay) ----------
+// Mirrors the exact access-control logic the 'join-room' socket handler uses:
+// password check for non-admins (admins bypass), then a normal publish+subscribe
+// grant — unless the caller is an admin joining in observer mode, in which case
+// they get a subscribe-only grant (the fix for the previously-broken observer
+// feature: LiveKit enforces "can't publish" at the media-server level instead
+// of relying on a manual client-side "don't open the mic" convention).
+app.post('/api/livekit/token', async (req, res) => {
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_URL) {
+    return res.status(500).json({ error: 'LiveKit is not configured on the server.' });
+  }
+
+  const user = await verifyUser(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Please sign in.' });
+  const profile = await getProfile(user.id);
+  if (!profile) return res.status(404).json({ error: 'Profile not found.' });
+
+  const { roomCode, password, observerMode } = req.body || {};
+  if (!roomCode) return res.status(400).json({ error: 'Room code is required.' });
+
+  // Use the live in-memory room's password hash if it exists (it's the same
+  // room join-room would use), otherwise fall back to the DB row.
+  const liveRoom = rooms[roomCode];
+  let passwordHash;
+  if (liveRoom) {
+    passwordHash = liveRoom.passwordHash;
+  } else {
+    const { data: dbRoom } = await supabaseAdmin.from('rooms').select('password_hash').eq('room_code', roomCode).single();
+    if (!dbRoom) return res.status(404).json({ error: 'Room not found. Ask the host to create it first.' });
+    passwordHash = dbRoom.password_hash;
+  }
+
+  const isAdmin = profile.role === 'admin';
+  if (passwordHash && !isAdmin) {
+    if (!password || !bcrypt.compareSync(password, passwordHash)) {
+      return res.status(403).json({ error: 'Incorrect room password.' });
+    }
+  }
+
+  const isObserver = !!observerMode && isAdmin;
+
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity: user.id,
+    name: profile.name,
+  });
+  at.addGrant({
+    room: roomCode,
+    roomJoin: true,
+    canPublish: !isObserver,
+    canSubscribe: true,
+  });
+
+  const token = await at.toJwt();
+  res.json({ token, url: LIVEKIT_URL });
 });
 
 app.get('/api/rooms/active', async (req, res) => {
@@ -551,11 +616,14 @@ Ask ONE natural follow-up question that builds on what they just said — one se
 
 // ---------- In-memory live room state ----------
 // rooms: { [roomCode]: {
-//   dbId, name, passwordHash, hostUserId, topic, teamMode,
+//   dbId, name, passwordHash, hostUserId, topic, teamMode, sessionMode: 'fixed-turn'|'gd',
 //   members: {socketId: {name,userId,role}}, observers: Set<socketId>,
 //   teams: {socketId: 'A'|'B'}, order: [socketId], turnIndex,
 //   transcripts: {socketId:text}, pendingTranscriptions: Set,
-//   peerRatings: {raterSocketId: {targetSocketId: score}}, state, timer, peerTimer
+//   peerRatings: {raterSocketId: {targetSocketId: score}}, state, timer, peerTimer,
+//   // GD Mode only:
+//   activeSpeakerId: socketId|null, speakStartTime: ms|null,
+//   speakingStats: {socketId: {totalMs, burstCount}}, gdTimer
 // } }
 const rooms = {};
 
@@ -567,11 +635,15 @@ function roomSummary(roomCode) {
     name: room.name,
     topic: room.topic || null,
     teamMode: room.teamMode,
+    sessionMode: room.sessionMode || 'fixed-turn',
     members: Object.entries(room.members).map(([id, m]) => ({ id, name: m.name, team: room.teams[id] || null })),
     observerCount: room.observers.size,
     state: room.state,
     turnIndex: room.turnIndex,
     currentSpeaker: room.turnIndex >= 0 && room.order[room.turnIndex] ? room.order[room.turnIndex] : null,
+    // GD Mode floor-control state
+    activeSpeakerId: room.activeSpeakerId || null,
+    activeSpeakerName: room.activeSpeakerId ? (room.members[room.activeSpeakerId]?.name || null) : null,
   };
 }
 
@@ -640,7 +712,9 @@ function finishPeerRating(roomCode) {
   clearTimeout(room.peerTimer);
   room.state = 'rating';
   broadcastRoom(roomCode);
-  if (room.pendingTranscriptions.size === 0) runRating(roomCode);
+  if (room.pendingTranscriptions.size === 0) {
+    if (room.sessionMode === 'gd') runGdRating(roomCode); else runRating(roomCode);
+  }
 }
 
 async function runRating(roomCode) {
@@ -765,6 +839,7 @@ async function persistSessionResults(roomCode, room, result) {
     room_code: roomCode,
     room_name: room.name,
     session_type: 'room',
+    session_mode: 'fixed-turn',
     topic: room.topic || null,
     user_id: room.memberInfo[s.id]?.userId || null,
     speaker_name: s.name,
@@ -783,6 +858,216 @@ async function persistSessionResults(roomCode, room, result) {
   const { error } = await supabaseAdmin.from('session_results').insert(rows);
   if (error) throw error;
   console.log(`[${roomCode}] session results saved (${rows.length} rows)`);
+
+  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
+  checkAndAwardBadges(userIds).catch(err =>
+    console.error(`[${roomCode}] badge check failed:`, err.message)
+  );
+}
+
+// ---------- GD Mode: floor control + rating ----------
+
+// Releases whoever currently holds the floor, recording their speaking-time
+// stats. `expectAudio: false` is used when we already know no more audio is
+// coming from them (e.g. they disconnected) — otherwise runGdRating would
+// wait forever on a pendingTranscription that will never resolve.
+function releaseFloor(roomCode, speakerId, { expectAudio = true } = {}) {
+  const room = rooms[roomCode];
+  if (!room || room.activeSpeakerId !== speakerId) return;
+
+  const durationMs = room.speakStartTime ? Date.now() - room.speakStartTime : 0;
+  if (!room.speakingStats[speakerId]) room.speakingStats[speakerId] = { totalMs: 0, burstCount: 0 };
+  room.speakingStats[speakerId].totalMs += durationMs;
+  room.speakingStats[speakerId].burstCount += 1;
+
+  room.activeSpeakerId = null;
+  room.speakStartTime = null;
+  if (expectAudio) room.pendingTranscriptions.add(speakerId);
+  io.to(roomCode).emit('mic-released', { id: speakerId });
+}
+
+function endGdSession(roomCode) {
+  const room = rooms[roomCode];
+  if (!room || room.state !== 'gd-discussion') return;
+  clearTimeout(room.gdTimer);
+
+  if (room.activeSpeakerId) {
+    const holderId = room.activeSpeakerId;
+    releaseFloor(roomCode, holderId);
+    // Tell that participant's client specifically to stop recording/uploading now.
+    io.to(holderId).emit('force-release-mic');
+  }
+
+  room.state = 'rating';
+  io.to(roomCode).emit('gd-session-end');
+  broadcastRoom(roomCode);
+
+  if (room.pendingTranscriptions.size === 0) runGdRating(roomCode);
+}
+
+async function runGdRating(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  // Include every member who was present during the discussion — even
+  // someone who never took the floor — so participation balance can
+  // penalize staying silent, not just dominating.
+  const allIds = new Set([...Object.keys(room.members), ...Object.keys(room.transcripts)]);
+  const entries = [...allIds].map(id => {
+    const stat = room.speakingStats[id] || { totalMs: 0, burstCount: 0 };
+    return {
+      id,
+      name: room.members[id]?.name || 'Unknown',
+      text: room.transcripts[id] || '(did not take the floor)',
+      totalSeconds: Math.round(stat.totalMs / 1000),
+      burstCount: stat.burstCount,
+    };
+  });
+
+  console.log(`[${roomCode}] running GD rating. Participants:`, entries.length, 'Key present:', !!GROQ_API_KEY);
+
+  if (entries.length === 0 || !GROQ_API_KEY) {
+    io.to(roomCode).emit('rating-error', 'No transcripts captured or API key missing.');
+    room.state = 'done';
+    broadcastRoom(roomCode);
+    return;
+  }
+
+  const transcriptBlock = entries
+    .map((e, i) => `Speaker ${i + 1} (name: "${e.name}", id: "${e.id}", spoke ${e.totalSeconds}s across ${e.burstCount} turn(s) at the floor):\n"""${e.text}"""`)
+    .join('\n\n');
+
+  const prompt = `You are judging a student Group Discussion (GD) speaking-practice session with EXACTLY ${entries.length} participants. Unlike a fixed-turn exercise, anyone could request the floor at any time, so some participants may have spoken much more or much less than others. Below is each participant's combined transcript across every time they held the floor, plus their total speaking time and how many separate times they took it.
+
+Rate each participant on: Content Quality/Logic, Participation Balance (penalize BOTH dominating the conversation AND staying nearly silent — balance matters, not just raw talk time), Clarity, Confidence, and an Overall score — each out of 10. Give each participant 1-2 sentences of constructive feedback.
+
+Then identify:
+- "mostActiveSpeakerId": whoever spoke the most by total time.
+- "mostSilentSpeakerId": whoever spoke the least by total time.
+- "bestContributorId": the single best overall contributor considering BOTH content quality and participation balance. This must NOT automatically be whoever talked the most — someone who dominated the floor but added little substance should not win over someone who spoke less but said something sharper and more relevant.
+
+CRITICAL: Your "scores" array MUST contain EXACTLY ${entries.length} objects — one for every single participant id listed below (${entries.map(e => e.id).join(', ')}). Do not skip, merge, or omit anyone, even if they never took the floor.
+
+Respond ONLY with valid JSON, no markdown fences, in this exact shape:
+{
+  "scores": [
+    {"id": "...", "name": "...", "contentQuality": 0, "participationBalance": 0, "clarity": 0, "confidence": 0, "overall": 0, "feedback": "..."}
+  ],
+  "mostActiveSpeakerId": "...",
+  "mostSilentSpeakerId": "...",
+  "bestContributorId": "...",
+  "bestContributorReason": "..."
+}
+
+Transcripts:
+${transcriptBlock}`;
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
+      body: JSON.stringify({ model: GROQ_MODEL, max_tokens: 2000, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!response.ok) throw new Error(`Groq API ${response.status}: ${await response.text()}`);
+
+    const data = await response.json();
+    const raw = (data.choices?.[0]?.message?.content || '').trim()
+      .replace(/^```json/i, '').replace(/```$/, '').trim();
+    const result = JSON.parse(raw);
+
+    // Fill in anyone the model dropped
+    const returnedIds = new Set((result.scores || []).map(s => s.id));
+    for (const e of entries) {
+      if (!returnedIds.has(e.id)) {
+        result.scores.push({
+          id: e.id, name: e.name, contentQuality: 0, participationBalance: 0, clarity: 0, confidence: 0, overall: 0,
+          feedback: 'Score unavailable — please re-run rating.',
+        });
+      }
+    }
+
+    // Blend in peer ratings the same way runRating() does: 60% peer + 40% AI overall,
+    // when peer ratings exist (GD sessions don't currently run a peer-rating stage,
+    // so this degrades gracefully to AI-only for now).
+    for (const s of result.scores) {
+      const received = Object.values(room.peerRatings)
+        .map(r => r[s.id]).filter(v => typeof v === 'number');
+      if (received.length > 0) {
+        const peerAvg5 = received.reduce((a, b) => a + b, 0) / received.length;
+        s.peerAverage = +(peerAvg5 * 2).toFixed(1); // scale 1-5 -> /10
+        s.finalScore = +(0.4 * s.overall + 0.6 * s.peerAverage).toFixed(1);
+      } else {
+        s.peerAverage = null;
+        s.finalScore = s.overall;
+      }
+
+      const stat = room.speakingStats[s.id] || { totalMs: 0, burstCount: 0 };
+      s.totalSecondsSpoken = Math.round(stat.totalMs / 1000);
+      s.burstCount = stat.burstCount;
+
+      const wordCount = ((room.transcripts[s.id] || '').match(/[a-zA-Z']+/g) || []).length;
+      s.fillerWordCount = computeSpeechStats(room.transcripts[s.id]).fillerCount;
+      s.wordsPerMinute = s.totalSecondsSpoken > 0 ? +((wordCount / (s.totalSecondsSpoken / 60)).toFixed(1)) : 0;
+    }
+
+    // Make sure the three named roles reference ids that actually made it into scores;
+    // fall back sensibly if the model returned something unexpected.
+    const scoreIds = new Set(result.scores.map(s => s.id));
+    if (!scoreIds.has(result.mostActiveSpeakerId)) {
+      result.mostActiveSpeakerId = [...result.scores].sort((a, b) => b.totalSecondsSpoken - a.totalSecondsSpoken)[0]?.id || null;
+    }
+    if (!scoreIds.has(result.mostSilentSpeakerId)) {
+      result.mostSilentSpeakerId = [...result.scores].sort((a, b) => a.totalSecondsSpoken - b.totalSecondsSpoken)[0]?.id || null;
+    }
+    if (!scoreIds.has(result.bestContributorId)) {
+      result.bestContributorId = [...result.scores].sort((a, b) => b.finalScore - a.finalScore)[0]?.id || null;
+    }
+
+    room.state = 'done';
+    io.to(roomCode).emit('gd-rating-result', result);
+    broadcastRoom(roomCode);
+
+    persistGdSessionResults(roomCode, room, result).catch(err =>
+      console.error(`[${roomCode}] failed to persist GD session results:`, err.message)
+    );
+  } catch (err) {
+    console.error('GD rating error:', err);
+    io.to(roomCode).emit('rating-error', 'Could not generate GD rating: ' + err.message);
+    room.state = 'done';
+    broadcastRoom(roomCode);
+  }
+}
+
+async function persistGdSessionResults(roomCode, room, result) {
+  // The existing session_results table has fixed-turn-shaped columns
+  // (clarity/fluency/structure/vocabulary/confidence). GD scores participants
+  // on a different rubric, so we map the closest equivalents: contentQuality
+  // -> structure, participationBalance -> fluency (both are already generic
+  // /10 dimension columns). `session_mode: 'gd'` is what actually
+  // distinguishes these rows going forward.
+  const rows = result.scores.map(s => ({
+    room_code: roomCode,
+    room_name: room.name,
+    session_type: 'room',
+    session_mode: 'gd',
+    topic: room.topic || null,
+    user_id: room.memberInfo[s.id]?.userId || null,
+    speaker_name: s.name,
+    clarity: s.clarity, fluency: s.participationBalance, structure: s.contentQuality,
+    vocabulary: null, confidence: s.confidence,
+    ai_overall: s.overall,
+    peer_average: s.peerAverage,
+    final_score: s.finalScore,
+    feedback: s.feedback,
+    is_best_speaker: s.id === result.bestContributorId,
+    team: room.teamMode ? (room.teams[s.id] || null) : null,
+    filler_word_count: s.fillerWordCount ?? null,
+    words_per_minute: s.wordsPerMinute ?? null,
+    audio_url: (room.audioUrls && room.audioUrls[s.id]) || null,
+  }));
+  const { error } = await supabaseAdmin.from('session_results').insert(rows);
+  if (error) throw error;
+  console.log(`[${roomCode}] GD session results saved (${rows.length} rows)`);
 
   const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
   checkAndAwardBadges(userIds).catch(err =>
@@ -1074,8 +1359,64 @@ io.on('connection', (socket) => {
       console.error(`[${roomCode}] transcription failed for ${socket.data.name}:`, err.message);
     } finally {
       room.pendingTranscriptions.delete(socket.id);
-      if (room.state === 'rating' && room.pendingTranscriptions.size === 0) runRating(roomCode);
+      if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
+        if (room.sessionMode === 'gd') runGdRating(roomCode); else runRating(roomCode);
+      }
     }
+  });
+
+  // ---------- GD Mode (floor-controlled free speaking) ----------
+  socket.on('start-gd-session', ({ durationMinutes } = {}) => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.sessionMode !== 'gd' || room.state !== 'waiting' || socket.data.isObserver) return;
+    const me = room.members[socket.id];
+    if (!me || me.userId !== room.hostUserId) return;
+
+    room.state = 'gd-discussion';
+    room.transcripts = {};
+    room.pendingTranscriptions = new Set();
+    room.peerRatings = {};
+    room.speakingStats = {};
+    room.activeSpeakerId = null;
+    room.speakStartTime = null;
+
+    const minutes = Number(durationMinutes) > 0 ? Number(durationMinutes) : GD_DEFAULT_MINUTES;
+    const seconds = Math.round(minutes * 60);
+
+    broadcastRoom(roomCode);
+    io.to(roomCode).emit('gd-session-start', { seconds });
+
+    clearTimeout(room.gdTimer);
+    room.gdTimer = setTimeout(() => endGdSession(roomCode), seconds * 1000);
+  });
+
+  socket.on('request-mic', () => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.sessionMode !== 'gd' || room.state !== 'gd-discussion' || socket.data.isObserver) return;
+    if (!room.members[socket.id]) return;
+    if (room.activeSpeakerId === socket.id) return; // already holds the floor
+
+    if (room.activeSpeakerId) {
+      const holderName = room.members[room.activeSpeakerId]?.name || 'Someone';
+      socket.emit('mic-denied', { holderName });
+      return;
+    }
+
+    room.activeSpeakerId = socket.id;
+    room.speakStartTime = Date.now();
+    io.to(roomCode).emit('mic-granted', { id: socket.id, name: room.members[socket.id].name });
+    broadcastRoom(roomCode);
+  });
+
+  socket.on('release-mic', () => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.sessionMode !== 'gd') return;
+    if (room.activeSpeakerId !== socket.id) return;
+    releaseFloor(roomCode, socket.id);
+    broadcastRoom(roomCode);
   });
 
   socket.on('skip-turn', () => {
@@ -1142,6 +1483,13 @@ function finalizeDeparture(roomCode, socketId) {
 
   const wasCurrentSpeaker = room.state === 'speaking' && room.order[room.turnIndex] === socketId;
 
+  // GD mode: if they dropped while holding the floor, release it right away
+  // so the room never gets stuck waiting on someone who's gone. No audio is
+  // coming from them, so don't add a pendingTranscription entry for it.
+  if (room.sessionMode === 'gd' && room.activeSpeakerId === socketId) {
+    releaseFloor(roomCode, socketId, { expectAudio: false });
+  }
+
   delete room.members[socketId];
   // They can no longer upload audio for a turn that was in flight, so drop
   // any pending-transcription entry for them — otherwise runRating() waits
@@ -1164,6 +1512,7 @@ function finalizeDeparture(roomCode, socketId) {
   if (Object.keys(room.members).length === 0 && room.observers.size === 0) {
     clearTimeout(room.timer);
     clearTimeout(room.peerTimer);
+    clearTimeout(room.gdTimer);
     delete rooms[roomCode];
     return;
   }
@@ -1184,7 +1533,7 @@ function finalizeDeparture(roomCode, socketId) {
     }
   } else if (room.state === 'rating' && room.pendingTranscriptions.size === 0) {
     // They were the last pending transcription — safe to score now.
-    runRating(roomCode);
+    if (room.sessionMode === 'gd') runGdRating(roomCode); else runRating(roomCode);
   }
 
   broadcastRoom(roomCode);
