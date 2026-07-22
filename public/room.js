@@ -9,24 +9,21 @@ const prefilledPassword = params.get('pw') || '';
 let myId = null;
 let myName = '';
 let accessToken = null;
-let localStream = null;
 let isObserver = false;
 let isHost = false;
 let latestSummary = null;
-const peers = {};
-const audioEls = {};
+let sessionMode = 'fixed-turn';
+let isMySpeakingTurn = false;   // fixed-turn mode
+let holdingFloor = false;       // GD mode
+let micMuted = false;           // fixed-turn manual mute state
+
+// ---------- LiveKit ----------
+let lkRoom = null;
+let livekitInitialized = false;
+const audioEls = {}; // keyed by LiveKit participant identity (== user id)
+
 let mediaRecorder = null;
 let recordedChunks = [];
-let isMySpeakingTurn = false;
-
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  ],
-};
 
 // ---------- DOM ----------
 const roomScreen = document.getElementById('room-screen');
@@ -45,17 +42,25 @@ const membersGrid = document.getElementById('members-grid');
 const turnBanner = document.getElementById('turn-banner');
 const turnText = document.getElementById('turn-text');
 const turnTimerEl = document.getElementById('turn-timer');
+const gdStartPanel = document.getElementById('gd-start-panel');
+const gdDurationInput = document.getElementById('gd-duration-input');
+const startGdBtn = document.getElementById('start-gd-btn');
+const gdBanner = document.getElementById('gd-banner');
+const gdStatusText = document.getElementById('gd-status-text');
+const gdTimerEl = document.getElementById('gd-timer');
 const micBtn = document.getElementById('mic-btn');
 const startBtn = document.getElementById('start-btn');
 const skipBtn = document.getElementById('skip-btn');
 const statusLine = document.getElementById('status-line');
 const bestSpeakerEl = document.getElementById('best-speaker');
+const gdParticipationBanner = document.getElementById('gd-participation-banner');
 const scoresListEl = document.getElementById('scores-list');
 const peerRatingList = document.getElementById('peer-rating-list');
 const submitRatingsBtn = document.getElementById('submit-ratings-btn');
 const peerRatingProgress = document.getElementById('peer-rating-progress');
 
 let turnCountdown = null;
+let gdCountdown = null;
 let myPeerRatings = {};
 
 // ---------- Init: auth + join ----------
@@ -72,21 +77,7 @@ let myPeerRatings = {};
   roomTitle.textContent = `Room: ${roomCode}`;
   isObserver = isObserverRequest && profile?.role === 'admin';
 
-  if (!isObserver) {
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-  }
-});
-    } catch (e) {
-      alert('Microphone access is required to join a room.');
-      window.location.href = 'dashboard.html';
-      return;
-    }
-  } else {
+  if (isObserver) {
     observerBanner.classList.remove('hidden');
     document.getElementById('controls').classList.add('hidden');
   }
@@ -103,7 +94,9 @@ socket.on('join-error', (msg) => {
 
 socket.on('observer-joined', (summary) => {
   latestSummary = summary;
+  sessionMode = summary.sessionMode || 'fixed-turn';
   renderMembers(summary);
+  ensureLiveKitConnected();
 });
 
 socket.on('joined-info', ({ isHost: hostFlag }) => {
@@ -111,76 +104,100 @@ socket.on('joined-info', ({ isHost: hostFlag }) => {
   if (latestSummary) renderTeamPanel(latestSummary);
 });
 
-socket.on('existing-peers', (peerList) => {
-  peerList.forEach(p => createPeerConnection(p.id, !isObserver));
-});
-socket.on('observer-joined-peer', ({ id }) => {
-  createPeerConnection(id, true);
-});
-socket.on('peer-joined', ({ id }) => { createPeerConnection(id, false); });
+// These used to drive manual WebRTC peer-connection setup; LiveKit now
+// handles all audio peering internally, so there's nothing to do here
+// beyond letting room-update (below) keep the members grid in sync.
+socket.on('existing-peers', () => {});
+socket.on('observer-joined-peer', () => {});
+socket.on('peer-joined', () => {});
+socket.on('peer-left', () => {});
 
-socket.on('peer-left', ({ id }) => {
-  if (peers[id]) { peers[id].close(); delete peers[id]; }
-  if (audioEls[id]) { audioEls[id].remove(); delete audioEls[id]; }
-});
+// ---------- LiveKit audio ----------
+// Connects to LiveKit once we know our observer/session-mode status (learned
+// from the first room summary), fetches a token from our own server, and
+// wires up remote-audio playback. Room *metadata* (topic, turn order, team,
+// GD floor state) stays on Socket.IO's 'room-update' — this only handles audio.
+async function ensureLiveKitConnected() {
+  if (livekitInitialized) return;
+  livekitInitialized = true;
 
-// ---------- WebRTC ----------
-function createPeerConnection(peerId, isInitiator) {
-  const pc = new RTCPeerConnection(ICE_SERVERS);
-  peers[peerId] = pc;
-
-  if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-  pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: peerId, data: { candidate: e.candidate } }); };
-  
-
-pc.oniceconnectionstatechange = () => {
-  if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-    pc.restartIce();
-  }
-};
-  pc.ontrack = (e) => {
-    let audioEl = audioEls[peerId];
-    if (!audioEl) {
-      audioEl = document.createElement('audio');
-      audioEl.autoplay = true;
-      document.body.appendChild(audioEl);
-      audioEls[peerId] = audioEl;
+  try {
+    const resp = await fetch('/api/livekit/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ roomCode, observerMode: isObserver, password: prefilledPassword }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      statusLine.textContent = data.error || 'Could not connect audio.';
+      return;
     }
-    audioEl.srcObject = e.streams[0];
-  };
 
-  if (isInitiator) {
-    pc.onnegotiationneeded = async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('signal', { to: peerId, data: { sdp: pc.localDescription } });
-    };
+    const { Room, RoomEvent } = window.LivekitClient;
+    lkRoom = new Room({
+      audioCaptureDefaults: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      // LiveKit's client SDK auto-reconnects on network changes — no manual
+      // ICE-state handling needed, unlike raw WebRTC.
+    });
+
+    lkRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      if (track.kind !== 'audio') return;
+      let audioEl = audioEls[participant.identity];
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+        audioEls[participant.identity] = audioEl;
+      }
+      track.attach(audioEl);
+    });
+
+    lkRoom.on(RoomEvent.TrackUnsubscribed, (track) => {
+      track.detach();
+    });
+
+    await lkRoom.connect(data.url, data.token);
+
+    if (!isObserver) {
+      if (sessionMode === 'gd') {
+        // GD mode: mic stays off (not published) until the floor is
+        // granted via 'mic-granted' — this is what actually prevents
+        // audio overlap, not just the app-level bookkeeping.
+      } else {
+        await lkRoom.localParticipant.setMicrophoneEnabled(true);
+      }
+    }
+  } catch (e) {
+    console.error('LiveKit connect failed:', e);
+    if (!isObserver) {
+      alert('Microphone access is required to join a room.');
+      window.location.href = 'dashboard.html';
+    } else {
+      statusLine.textContent = 'Could not connect audio (LiveKit).';
+    }
   }
-  return pc;
 }
 
-socket.on('signal', async ({ from, data }) => {
-  let pc = peers[from];
-  if (!pc) pc = createPeerConnection(from, false);
-  if (data.sdp) {
-    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    if (data.sdp.type === 'offer') {
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('signal', { to: from, data: { sdp: pc.localDescription } });
-    }
-  } else if (data.candidate) {
-    try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-  }
-});
+function getLocalAudioMediaStream() {
+  if (!lkRoom || !lkRoom.localParticipant) return null;
+  const pubs = [...lkRoom.localParticipant.audioTrackPublications.values()];
+  const track = pubs[0]?.track;
+  if (!track || !track.mediaStreamTrack) return null;
+  return new MediaStream([track.mediaStreamTrack]);
+}
 
 // ---------- Room state ----------
 socket.on('room-update', (summary) => {
   latestSummary = summary;
+  sessionMode = summary.sessionMode || 'fixed-turn';
   roomStateBadge.textContent = summary.state;
   renderMembers(summary);
   renderTeamPanel(summary);
+  ensureLiveKitConnected();
 
   if (summary.topic) {
     topicText.textContent = summary.topic;
@@ -188,11 +205,23 @@ socket.on('room-update', (summary) => {
   }
 
   if (!isObserver) {
-    startBtn.classList.toggle('hidden', summary.state !== 'waiting');
+    const showGdStartPanel = isHost && sessionMode === 'gd' && summary.state === 'waiting';
+    gdStartPanel.classList.toggle('hidden', !showGdStartPanel);
+
+    startBtn.classList.toggle('hidden', sessionMode === 'gd' || summary.state !== 'waiting');
     startBtn.disabled = summary.members.length < 2;
-    statusLine.textContent = summary.state === 'waiting'
-      ? `${summary.members.length}/8 joined. Need at least 2 to start.`
-      : '';
+
+    if (summary.state === 'waiting') {
+      statusLine.textContent = `${summary.members.length}/8 joined. Need at least 2 to start.`;
+    } else if (summary.state !== 'gd-discussion') {
+      statusLine.textContent = '';
+    }
+
+    // Reflect current GD floor holder on every update, in case we missed
+    // the original mic-granted/mic-released broadcast (e.g. reconnect).
+    if (sessionMode === 'gd' && summary.state === 'gd-discussion') {
+      updateGdMicButton(summary.activeSpeakerId, summary.activeSpeakerName);
+    }
   }
 });
 
@@ -200,10 +229,11 @@ function renderMembers(summary) {
   membersGrid.innerHTML = '';
   summary.members.forEach(m => {
     const teamClass = m.team === 'A' ? ' team-a' : m.team === 'B' ? ' team-b' : '';
+    const isSpeaking = m.id === summary.currentSpeaker || m.id === summary.activeSpeakerId;
     const div = document.createElement('div');
-    div.className = 'member-card' + (m.id === summary.currentSpeaker ? ' speaking' : '') + teamClass;
+    div.className = 'member-card' + (isSpeaking ? ' speaking' : '') + teamClass;
     const teamTag = m.team ? ` · Team ${m.team}` : '';
-    div.innerHTML = `<div class="avatar">${m.id === summary.currentSpeaker ? '🗣️' : '🙂'}</div>
+    div.innerHTML = `<div class="avatar">${isSpeaking ? '🗣️' : '🙂'}</div>
                       <div class="mname">${escapeHtml(m.name)}${m.id === myId ? ' (you)' : ''}${teamTag}</div>`;
     membersGrid.appendChild(div);
   });
@@ -247,14 +277,106 @@ randomizeTeamsBtn.onclick = () => socket.emit('randomize-teams');
 startBtn.onclick = () => socket.emit('start-session');
 skipBtn.onclick = () => socket.emit('skip-turn');
 
-micBtn.onclick = () => {
-  if (!localStream) return;
-  const track = localStream.getAudioTracks()[0];
-  track.enabled = !track.enabled;
-  micBtn.textContent = track.enabled ? '🎤 Mute' : '🔇 Unmute';
+startGdBtn.onclick = () => {
+  const durationMinutes = Math.max(1, Number(gdDurationInput.value) || 5);
+  socket.emit('start-gd-session', { durationMinutes });
 };
 
-// ---------- Turn / recording ----------
+// ---------- Mic button: fixed-turn mute/unmute vs GD request/release floor ----------
+micBtn.onclick = () => {
+  if (isObserver) return;
+
+  if (sessionMode === 'gd') {
+    if (holdingFloor) socket.emit('release-mic');
+    else socket.emit('request-mic');
+    return;
+  }
+
+  micMuted = !micMuted;
+  lkRoom?.localParticipant?.setMicrophoneEnabled(!micMuted);
+  micBtn.textContent = micMuted ? '🔇 Unmute' : '🎤 Mute';
+};
+
+function updateGdMicButton(activeSpeakerId, activeSpeakerName) {
+  if (isObserver) return;
+  if (!activeSpeakerId) {
+    holdingFloor = false;
+    micBtn.disabled = false;
+    micBtn.textContent = '🎤 Tap to speak';
+  } else if (activeSpeakerId === myId) {
+    holdingFloor = true;
+    micBtn.disabled = false;
+    micBtn.textContent = '🔴 Release Mic (you are speaking)';
+  } else {
+    holdingFloor = false;
+    micBtn.disabled = true;
+    micBtn.textContent = `🔇 ${activeSpeakerName || 'Someone'} is speaking...`;
+  }
+}
+
+// ---------- GD Mode events ----------
+socket.on('gd-session-start', ({ seconds }) => {
+  roomScreen.classList.remove('hidden');
+  peerRatingScreen.classList.add('hidden');
+  resultsScreen.classList.add('hidden');
+  gdStartPanel.classList.add('hidden');
+  startBtn.classList.add('hidden');
+  gdBanner.classList.remove('hidden');
+  gdStatusText.textContent = 'Group discussion in progress...';
+  micBtn.classList.remove('hidden');
+  micBtn.disabled = false;
+  micBtn.textContent = '🎤 Tap to speak';
+  statusLine.textContent = '';
+
+  let remaining = seconds;
+  updateGdTimerDisplay(remaining);
+  clearInterval(gdCountdown);
+  gdCountdown = setInterval(() => {
+    remaining -= 1;
+    updateGdTimerDisplay(Math.max(remaining, 0));
+    if (remaining <= 0) clearInterval(gdCountdown);
+  }, 1000);
+});
+
+function updateGdTimerDisplay(totalSeconds) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  gdTimerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+}
+
+socket.on('mic-granted', ({ id, name }) => {
+  updateGdMicButton(id, name);
+  if (id === myId) {
+    lkRoom?.localParticipant?.setMicrophoneEnabled(true).then(() => startRecording());
+  }
+});
+
+socket.on('mic-released', ({ id }) => {
+  if (id === myId) {
+    stopRecording();
+    lkRoom?.localParticipant?.setMicrophoneEnabled(false);
+    statusLine.textContent = 'Uploading your recording...';
+  }
+  updateGdMicButton(null, null);
+});
+
+socket.on('mic-denied', ({ holderName }) => {
+  statusLine.textContent = `${holderName} currently has the floor — try again once they release it.`;
+});
+
+socket.on('force-release-mic', () => {
+  stopRecording();
+  lkRoom?.localParticipant?.setMicrophoneEnabled(false);
+});
+
+socket.on('gd-session-end', () => {
+  clearInterval(gdCountdown);
+  gdBanner.classList.add('hidden');
+  micBtn.classList.add('hidden');
+  statusLine.textContent = 'Discussion ended — scoring participation...';
+});
+
+// ---------- Turn / recording (fixed-turn mode) ----------
 socket.on('turn-start', ({ speakerId, speakerName, seconds }) => {
   turnBanner.classList.remove('hidden');
   turnText.textContent = `${speakerName} is speaking...`;
@@ -287,10 +409,13 @@ socket.on('transcribing-status', ({ name }) => {
 });
 
 function startRecording() {
+  const stream = getLocalAudioMediaStream();
+  if (!stream) { statusLine.textContent = 'Microphone not ready yet — try again in a moment.'; return; }
+
   recordedChunks = [];
   let options = { mimeType: 'audio/webm;codecs=opus' };
   if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
-  try { mediaRecorder = new MediaRecorder(localStream, options); }
+  try { mediaRecorder = new MediaRecorder(stream, options); }
   catch (e) { statusLine.textContent = 'Recording not supported in this browser.'; return; }
 
   mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
@@ -308,7 +433,7 @@ function stopRecording() {
   }
 }
 
-// ---------- Peer rating ----------
+// ---------- Peer rating (fixed-turn mode) ----------
 socket.on('peer-rating-start', ({ members, seconds }) => {
   roomScreen.classList.add('hidden');
   peerRatingScreen.classList.remove('hidden');
@@ -350,12 +475,13 @@ submitRatingsBtn.onclick = () => {
   submitRatingsBtn.textContent = 'Waiting for others...';
 };
 
-// ---------- Results ----------
+// ---------- Results (fixed-turn AI rating) ----------
 socket.on('rating-result', (result) => {
   stopRecording();
   peerRatingScreen.classList.add('hidden');
   roomScreen.classList.add('hidden');
   resultsScreen.classList.remove('hidden');
+  gdParticipationBanner.classList.add('hidden');
 
   const best = result.scores.find(s => s.id === result.bestSpeakerId) || result.scores[0];
   bestSpeakerEl.innerHTML = `🏆 Best Speaker: <strong>${escapeHtml(best?.name || '?')}</strong><br>
@@ -397,12 +523,52 @@ socket.on('rating-result', (result) => {
     });
 });
 
+// ---------- Results (GD-specific AI rating) ----------
+socket.on('gd-rating-result', (result) => {
+  stopRecording();
+  peerRatingScreen.classList.add('hidden');
+  roomScreen.classList.add('hidden');
+  resultsScreen.classList.remove('hidden');
+  teamResultsEl.classList.add('hidden');
+
+  const best = result.scores.find(s => s.id === result.bestContributorId) || result.scores[0];
+  bestSpeakerEl.innerHTML = `🏆 Best Contributor: <strong>${escapeHtml(best?.name || '?')}</strong><br>
+    <span style="font-weight:400;font-size:14px;">${escapeHtml(result.bestContributorReason || '')}</span>`;
+
+  const mostActive = result.scores.find(s => s.id === result.mostActiveSpeakerId);
+  const mostSilent = result.scores.find(s => s.id === result.mostSilentSpeakerId);
+  gdParticipationBanner.classList.remove('hidden');
+  gdParticipationBanner.innerHTML =
+    `🗣️ Most active: <strong>${escapeHtml(mostActive?.name || '—')}</strong> (${mostActive?.totalSecondsSpoken ?? 0}s)` +
+    ` &nbsp;·&nbsp; 🤫 Quietest: <strong>${escapeHtml(mostSilent?.name || '—')}</strong> (${mostSilent?.totalSecondsSpoken ?? 0}s)`;
+
+  scoresListEl.innerHTML = '';
+  result.scores
+    .sort((a, b) => (b.finalScore ?? b.overall) - (a.finalScore ?? a.overall))
+    .forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'score-card';
+      const peerLine = s.peerAverage !== null && s.peerAverage !== undefined
+        ? `<div class="score-row"><span>AI: ${s.overall}/10</span><span>Peer: ${s.peerAverage}/10</span><span><strong>Final: ${s.finalScore}/10</strong></span></div>`
+        : `<div class="score-row"><span>AI: ${s.overall}/10 (no peer ratings received)</span></div>`;
+      div.innerHTML = `
+        <h3>${escapeHtml(s.name)} — ${s.finalScore ?? s.overall}/10</h3>
+        ${peerLine}
+        <div class="score-row"><span>Content: ${s.contentQuality}</span><span>Balance: ${s.participationBalance}</span>
+             <span>Clarity: ${s.clarity}</span><span>Confidence: ${s.confidence}</span></div>
+        <div class="score-row"><span>Spoke: ${s.totalSecondsSpoken ?? 0}s across ${s.burstCount ?? 0} turn(s)</span><span>Filler words: ${s.fillerWordCount ?? '—'}</span><span>${s.wordsPerMinute ?? '—'} wpm</span></div>
+        <div class="feedback">${escapeHtml(s.feedback || '')}</div>`;
+      scoresListEl.appendChild(div);
+    });
+});
+
 socket.on('rating-error', (msg) => {
   stopRecording();
   peerRatingScreen.classList.add('hidden');
   roomScreen.classList.add('hidden');
   resultsScreen.classList.remove('hidden');
   bestSpeakerEl.textContent = '⚠️ ' + msg;
+  gdParticipationBanner.classList.add('hidden');
   scoresListEl.innerHTML = '';
 });
 
