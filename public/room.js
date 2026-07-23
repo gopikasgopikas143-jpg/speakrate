@@ -51,6 +51,7 @@ const gdTimerEl = document.getElementById('gd-timer');
 const micBtn = document.getElementById('mic-btn');
 const startBtn = document.getElementById('start-btn');
 const skipBtn = document.getElementById('skip-btn');
+const endGdBtn = document.getElementById('end-gd-btn');
 const statusLine = document.getElementById('status-line');
 const bestSpeakerEl = document.getElementById('best-speaker');
 const gdParticipationBanner = document.getElementById('gd-participation-banner');
@@ -164,9 +165,21 @@ async function ensureLiveKitConnected() {
 
     if (!isObserver) {
       if (sessionMode === 'gd') {
-        // GD mode: mic stays off (not published) until the floor is
-        // granted via 'mic-granted' — this is what actually prevents
-        // audio overlap, not just the app-level bookkeeping.
+        // GD mode: don't publish audio yet — that only happens once the
+        // floor is granted (see 'mic-granted' below), which is what
+        // actually prevents overlap. But DO ask for mic *permission* now,
+        // while we're still in the normal join flow, so the browser's
+        // permission prompt (and any user click-through it needs) happens
+        // up front instead of silently failing later mid-discussion.
+        try {
+          const warmupStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          warmupStream.getTracks().forEach(t => t.stop());
+        } catch (permErr) {
+          console.error('Mic permission check failed:', permErr);
+          alert('Microphone access is required to join a room.');
+          window.location.href = 'dashboard.html';
+          return;
+        }
       } else {
         await lkRoom.localParticipant.setMicrophoneEnabled(true);
       }
@@ -282,6 +295,10 @@ startGdBtn.onclick = () => {
   socket.emit('start-gd-session', { durationMinutes });
 };
 
+endGdBtn.onclick = () => {
+  if (confirm('End the discussion now for everyone?')) socket.emit('end-gd-session');
+};
+
 // ---------- Mic button: fixed-turn mute/unmute vs GD request/release floor ----------
 micBtn.onclick = () => {
   if (isObserver) return;
@@ -326,6 +343,7 @@ socket.on('gd-session-start', ({ seconds }) => {
   micBtn.classList.remove('hidden');
   micBtn.disabled = false;
   micBtn.textContent = '🎤 Tap to speak';
+  endGdBtn.classList.toggle('hidden', !isHost);
   statusLine.textContent = '';
 
   let remaining = seconds;
@@ -347,7 +365,12 @@ function updateGdTimerDisplay(totalSeconds) {
 socket.on('mic-granted', ({ id, name }) => {
   updateGdMicButton(id, name);
   if (id === myId) {
-    lkRoom?.localParticipant?.setMicrophoneEnabled(true).then(() => startRecording());
+    lkRoom?.localParticipant?.setMicrophoneEnabled(true)
+      .then(() => startRecording())
+      .catch(err => {
+        console.error('Could not enable mic for GD floor:', err);
+        statusLine.textContent = 'Could not turn on your mic — check browser mic permission and try again.';
+      });
   }
 });
 
@@ -373,6 +396,7 @@ socket.on('gd-session-end', () => {
   clearInterval(gdCountdown);
   gdBanner.classList.add('hidden');
   micBtn.classList.add('hidden');
+  endGdBtn.classList.add('hidden');
   statusLine.textContent = 'Discussion ended — scoring participation...';
 });
 
