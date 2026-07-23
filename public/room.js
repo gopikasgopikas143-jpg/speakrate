@@ -134,12 +134,19 @@ async function ensureLiveKitConnected() {
       return;
     }
 
-    const { Room, RoomEvent } = window.LivekitClient;
+    const { Room, RoomEvent, AudioPresets } = window.LivekitClient;
     lkRoom = new Room({
       audioCaptureDefaults: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+      },
+      publishDefaults: {
+        // Higher-bitrate speech codec settings + no DTX (which can make
+        // voice sound choppy/robotic by dropping silent-looking frames
+        // that are actually still speech).
+        audioPreset: AudioPresets.speech,
+        dtx: false,
       },
       // LiveKit's client SDK auto-reconnects on network changes — no manual
       // ICE-state handling needed, unlike raw WebRTC.
@@ -397,7 +404,7 @@ socket.on('gd-session-end', () => {
   gdBanner.classList.add('hidden');
   micBtn.classList.add('hidden');
   endGdBtn.classList.add('hidden');
-  statusLine.textContent = 'Discussion ended — scoring participation...';
+  statusLine.textContent = 'Discussion ended — rate your fellow speakers next...';
 });
 
 // ---------- Turn / recording (fixed-turn mode) ----------
