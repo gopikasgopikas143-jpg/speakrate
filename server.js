@@ -928,11 +928,10 @@ function endGdSession(roomCode) {
     io.to(holderId).emit('force-release-mic');
   }
 
-  room.state = 'rating';
   io.to(roomCode).emit('gd-session-end');
-  broadcastRoom(roomCode);
-
-  if (room.pendingTranscriptions.size === 0) runGdRating(roomCode);
+  // Same as fixed-turn mode: go through a peer-rating stage before the AI
+  // rating, running in parallel with any still-uploading transcriptions.
+  startPeerRating(roomCode);
 }
 
 async function runGdRating(roomCode) {
