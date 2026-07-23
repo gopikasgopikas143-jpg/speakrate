@@ -54,6 +54,12 @@
           Enable Team Mode (host assigns Team A / Team B before starting)
         </label>
 
+        <label style="display:block; margin-top:12px; margin-bottom:4px;">Speaking mode</label>
+        <select id="session-mode-select">
+          <option value="fixed-turn">Fixed Turn (everyone speaks in order, 60s each)</option>
+          <option value="gd">Group Discussion (floor control — anyone can request to speak)</option>
+        </select>
+
         <button id="create-room-btn">Create Room</button>
         <div id="create-room-result" class="hidden result-box">
           <p>Room created! Share this code:</p>
