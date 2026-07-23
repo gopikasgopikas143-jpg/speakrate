@@ -627,6 +627,36 @@ Ask ONE natural follow-up question that builds on what they just said — one se
 // } }
 const rooms = {};
 
+// Builds a fresh in-memory room object from its Supabase row. Shared by the
+// Socket.IO 'join-room' handler and the REST /api/livekit/token endpoint so
+// both agree on the exact same shape whichever one happens to spin up the
+// room first.
+function createRoomState(dbRoom) {
+  return {
+    dbId: dbRoom.id, name: dbRoom.name, passwordHash: dbRoom.password_hash,
+    hostUserId: dbRoom.created_by, topic: dbRoom.topic || null, teamMode: !!dbRoom.team_mode,
+    sessionMode: dbRoom.session_mode === 'gd' ? 'gd' : 'fixed-turn',
+    members: {}, observers: new Set(), teams: {}, order: [], turnIndex: -1, memberInfo: {},
+    transcripts: {}, pendingTranscriptions: new Set(), peerRatings: {},
+    activeSpeakerId: null, speakStartTime: null, speakingStats: {},
+    admittedUserIds: new Set(),
+    state: 'waiting', timer: null, peerTimer: null, gdTimer: null,
+  };
+}
+
+// Looks up (or lazily creates from Supabase) the in-memory room for
+// roomCode. Used by both the 'join-room' socket handler and the LiveKit
+// token endpoint so there's exactly one place a room gets spun up.
+async function getOrCreateRoom(roomCode) {
+  let room = rooms[roomCode];
+  if (!room) {
+    const { data: dbRoom } = await supabaseAdmin.from('rooms').select('*').eq('room_code', roomCode).single();
+    if (!dbRoom) return { error: 'Room not found. Ask the host to create it first.' };
+    room = rooms[roomCode] = createRoomState(dbRoom);
+  }
+  return { room };
+}
+
 function roomSummary(roomCode) {
   const room = rooms[roomCode];
   if (!room) return null;
@@ -1229,18 +1259,8 @@ io.on('connection', (socket) => {
     const profile = await getProfile(user.id);
     if (!profile) return socket.emit('join-error', 'Profile not found.');
 
-    let room = rooms[roomCode];
-    if (!room) {
-      const { data: dbRoom } = await supabaseAdmin.from('rooms').select('*').eq('room_code', roomCode).single();
-      if (!dbRoom) return socket.emit('join-error', 'Room not found. Ask the host to create it first.');
-      room = rooms[roomCode] = {
-        dbId: dbRoom.id, name: dbRoom.name, passwordHash: dbRoom.password_hash,
-        hostUserId: dbRoom.created_by, topic: dbRoom.topic || null, teamMode: !!dbRoom.team_mode,
-        members: {}, observers: new Set(), teams: {}, order: [], turnIndex: -1, memberInfo: {},
-        transcripts: {}, pendingTranscriptions: new Set(), peerRatings: {},
-        state: 'waiting', timer: null, peerTimer: null,
-      };
-    }
+    const { room, error: roomError } = await getOrCreateRoom(roomCode);
+    if (roomError) return socket.emit('join-error', roomError);
 
     const isAdmin = profile.role === 'admin';
 
@@ -1257,6 +1277,7 @@ io.on('connection', (socket) => {
   socket.data.roomCode = roomCode;
   socket.data.isObserver = true;
   room.observers.add(socket.id);
+  room.admittedUserIds.add(user.id);
  const existingIds = Object.keys(room.members);
   socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
 
@@ -1277,6 +1298,7 @@ io.on('connection', (socket) => {
     socket.data.name = profile.name;
     room.members[socket.id] = { name: profile.name, userId: user.id, role: profile.role };
     room.memberInfo[socket.id] = { name: profile.name, userId: user.id };
+    room.admittedUserIds.add(user.id);
 
     const existingIds = Object.keys(room.members).filter(id => id !== socket.id);
     socket.emit('existing-peers', existingIds.map(id => ({ id, name: room.members[id].name })));
@@ -1313,10 +1335,6 @@ io.on('connection', (socket) => {
     const ids = Object.keys(room.members).sort(() => Math.random() - 0.5);
     ids.forEach((id, i) => { room.teams[id] = i % 2 === 0 ? 'A' : 'B'; });
     broadcastRoom(roomCode);
-  });
-
-  socket.on('signal', ({ to, data }) => {
-    io.to(to).emit('signal', { from: socket.id, data });
   });
 
   socket.on('start-session', () => {
