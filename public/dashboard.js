@@ -89,12 +89,13 @@ document.getElementById('create-room-btn').onclick = async () => {
   const password = document.getElementById('room-password-input').value;
   const topic = document.getElementById('topic-input').value.trim();
   const teamMode = document.getElementById('team-mode-checkbox').checked;
+  const sessionMode = document.getElementById('session-mode-select').value;
   if (!name) return alert('Enter a room name.');
 
   const resp = await fetch('/api/rooms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-    body: JSON.stringify({ name, password: password || undefined, topic: topic || undefined, teamMode }),
+    body: JSON.stringify({ name, password: password || undefined, topic: topic || undefined, teamMode, sessionMode }),
   });
   const data = await resp.json();
   if (!resp.ok) return alert(data.error || 'Could not create room.');
