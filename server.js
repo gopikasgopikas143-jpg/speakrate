@@ -1437,6 +1437,16 @@ io.on('connection', (socket) => {
     broadcastRoom(roomCode);
   });
 
+  // Host can end the discussion early instead of waiting out the full timer.
+  socket.on('end-gd-session', () => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room || room.sessionMode !== 'gd' || room.state !== 'gd-discussion' || socket.data.isObserver) return;
+    const me = room.members[socket.id];
+    if (!me || me.userId !== room.hostUserId) return;
+    endGdSession(roomCode);
+  });
+
   socket.on('skip-turn', () => {
     const roomCode = socket.data.roomCode;
     const room = rooms[roomCode];
